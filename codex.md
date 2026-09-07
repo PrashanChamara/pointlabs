@@ -52,6 +52,10 @@ The agreed scope is the full Pointlabs One system, delivered in safe milestones 
 
 Use a modular Flask application with server-rendered responsive templates and focused JavaScript enhancements. Use SQLAlchemy and migrations with SQLite locally and MySQL in deployment. Deliver PWA installation support, with one maintainable codebase rather than a separate frontend application.
 
+## Delivery status
+
+The local test build is available through Flask with the seeded `admin` account and temporary development password supplied by the user. Configure `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, and `SMTP_FROM` in a local `.env` file to activate real OTP, leave, and birthday email delivery. The temporary Word instruction brief was removed after its requirements were captured here.
+
 ### Approved foundation and access model
 
 Use administrator, reporting-officer, and employee access levels. Designations are data records with an editable `is_reporting_officer_designation` flag; reporting relationships are stored on individual employee records. Every user can view today's employees on leave. Store and administer leave policies, public-holiday calendars, and working days separately per entity/location.
