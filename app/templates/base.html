@@ -3,11 +3,13 @@
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="theme-color" content="#f7fbf6">
+  <meta name="csrf-token" content="{{ csrf_token() }}">
   <title>{% block title %}Pointlabs One{% endblock %}</title>
   <link rel="manifest" href="{{ url_for('static', filename='manifest.webmanifest') }}">
   <link rel="icon" href="{{ url_for('static', filename='icon.png') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='mobile-fixes.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='auth.css') }}">
   <script>document.documentElement.dataset.theme=localStorage.getItem('pointlabs-theme')||'light'</script>
 </head>
 <body>

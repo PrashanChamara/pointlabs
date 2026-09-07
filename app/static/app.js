@@ -2,6 +2,18 @@ const root = document.documentElement;
 const sidebar = document.querySelector('#sidebar');
 const menuButton = document.querySelector('[data-menu-toggle]');
 const closeButton = document.querySelector('[data-menu-close]');
+const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content;
+
+if (csrfToken) {
+  document.querySelectorAll('form').forEach((form) => {
+    if ((form.method || 'get').toLowerCase() !== 'post' || form.querySelector('input[name="csrf_token"]')) return;
+    const tokenField = document.createElement('input');
+    tokenField.type = 'hidden';
+    tokenField.name = 'csrf_token';
+    tokenField.value = csrfToken;
+    form.prepend(tokenField);
+  });
+}
 
 document.querySelector('[data-theme-toggle]')?.addEventListener('click', () => {
   const next = root.dataset.theme === 'dark' ? 'light' : 'dark';
