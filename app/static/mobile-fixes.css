@@ -2,7 +2,7 @@
 .brand-logo { width: 114px; height: 25px; object-fit: contain; }
 html[data-theme="dark"] .brand-logo-dark { width: 114px; height: 25px; object-fit: cover; object-position: center; transform: none; mix-blend-mode: normal; }
 .drawer-brand-row { display: flex; align-items: center; justify-content: space-between; }
-.drawer-close, .mobile-wordmark { display: none; }
+.drawer-close { display: none; }
 .app-identity { position: absolute; left: 50%; transform: translateX(-50%); display: inline-flex; align-items: center; color: var(--ink); font-size: 15px; font-weight: 850; letter-spacing: -.045em; white-space: nowrap; }
 .app-identity img { width: 15px; height: 15px; margin: 0 1px 0 4px; object-fit: contain; }
 
@@ -16,11 +16,6 @@ html[data-theme="dark"] .brand-logo-dark { width: 114px; height: 25px; object-fi
   html[data-theme="dark"] .sidebar .brand-logo-light { display: none !important; }
   html[data-theme="dark"] .sidebar .brand-logo-dark { display: block !important; width: 114px; height: 25px; }
   .drawer-close { display: grid; place-items: center; width: 34px; height: 34px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); color: var(--ink); font-size: 22px; line-height: 1; }
-  .mobile-wordmark { display: block; margin-left: 10px; }
-  .mobile-wordmark .brand-logo-light { display: block !important; width: 94px; height: 21px; }
-  .mobile-wordmark .brand-logo-dark { display: none !important; }
-  html[data-theme="dark"] .mobile-wordmark .brand-logo-light { display: none !important; }
-  html[data-theme="dark"] .mobile-wordmark .brand-logo-dark { display: block !important; width: 94px; height: 21px; }
   .app-identity { font-size: 13px; }
   .app-identity img { width: 13px; height: 13px; }
 }

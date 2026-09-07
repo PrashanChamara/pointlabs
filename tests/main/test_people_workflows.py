@@ -21,6 +21,7 @@ def test_dashboard_uses_time_aware_greeting(client, app):
     assert b"Good " in response.data
     assert b'class="mobile-nav"' not in response.data
     assert b'one-lockup' not in response.data
+    assert b'mobile-wordmark' not in response.data
     assert b'data-menu-close' in response.data
     assert b'app-identity' in response.data
 
