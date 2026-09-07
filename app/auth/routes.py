@@ -15,9 +15,17 @@ def login_form():
 
 @bp.post("/login")
 def login():
-    user = User.query.filter_by(username=request.form.get("username", "")).first()
+    username = request.form.get("username", "").strip()
+    user = User.query.filter_by(username=username).first()
     if user is None or not user.check_password(request.form.get("password", "")):
-        return "Invalid credentials", 401
+        return (
+            render_template(
+                "login.html",
+                username=username,
+                login_error="Check your user ID and password, then try again.",
+            ),
+            401,
+        )
     login_user(user)
     if user.must_change_password:
         return redirect(url_for("auth.change_password"))
