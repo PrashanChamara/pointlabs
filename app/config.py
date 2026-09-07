@@ -34,10 +34,19 @@ class DevelopmentConfig(BaseConfig):
     WTF_CSRF_ENABLED = False
 
 
+class ProductionConfig(BaseConfig):
+    SQLALCHEMY_DATABASE_URI = os.environ.get("DATABASE_URL")
+    WTF_CSRF_ENABLED = True
+
+
 class TestingConfig(BaseConfig):
     TESTING = True
     WTF_CSRF_ENABLED = False
     SQLALCHEMY_DATABASE_URI = "sqlite://"
 
 
-CONFIGS = {"development": DevelopmentConfig, "testing": TestingConfig}
+CONFIGS = {
+    "development": DevelopmentConfig,
+    "production": ProductionConfig,
+    "testing": TestingConfig,
+}
