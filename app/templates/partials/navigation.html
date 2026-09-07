@@ -1,9 +1,11 @@
 <aside class="sidebar" id="sidebar">
-  <a class="brand" href="{{ url_for('main.dashboard') }}" aria-label="Pointlabs One home">
-    <img class="brand-logo brand-logo-light" src="{{ url_for('static', filename='images/logo-light.png') }}" alt="Pointlabs">
-    <img class="brand-logo brand-logo-dark" src="{{ url_for('static', filename='images/logo-dark.jpg') }}" alt="Pointlabs">
-    <span class="one-lockup"><img src="{{ url_for('static', filename='images/pointlabs-ring.png') }}" alt="">ne</span>
-  </a>
+  <div class="drawer-brand-row">
+    <a class="brand" href="{{ url_for('main.dashboard') }}" aria-label="Pointlabs home">
+      <img class="brand-logo brand-logo-light" src="{{ url_for('static', filename='images/logo-light.png') }}" alt="Pointlabs">
+      <img class="brand-logo brand-logo-dark" src="{{ url_for('static', filename='images/logo-dark.jpg') }}" alt="Pointlabs">
+    </a>
+    <button class="drawer-close" type="button" aria-label="Close menu" data-menu-close>×</button>
+  </div>
   <div class="workspace-label">WORKSPACE</div>
   <nav class="side-nav" aria-label="Main navigation">
     {% if current_user.is_administrator %}<a class="nav-link" href="{{ url_for('main.employees') }}"><span>◉</span>Employee list</a>{% endif %}
@@ -15,4 +17,4 @@
   </nav>
   <div class="sidebar-footer"><a class="account-card" href="{{ url_for('main.profile') }}" title="Open my profile"><span class="avatar avatar-large">{{ current_user.username[:1]|upper }}</span><span><b>{{ current_user.employee_profile.full_name if current_user.employee_profile else current_user.username }}</b><small>{{ 'Administrator' if current_user.is_administrator else 'Employee account' }}</small></span><i>›</i></a><a href="{{ url_for('auth.logout') }}" class="logout">Sign out <span>↗</span></a></div>
 </aside>
-<header class="topbar"><button class="icon-button mobile-menu" aria-label="Open menu" aria-expanded="false" data-menu-toggle>☰</button><div class="mobile-brand"><img src="{{ url_for('static', filename='images/pointlabs-ring.png') }}" alt="">Pointlabs <b>One</b></div><div class="topbar-actions"><a class="top-message" href="{{ url_for('main.messages') }}" aria-label="Open messages">✦</a><button class="icon-button" aria-label="Toggle color theme" data-theme-toggle>◐</button></div></header>
+<header class="topbar"><button class="icon-button mobile-menu" aria-label="Open menu" aria-expanded="false" data-menu-toggle>☰</button><div class="mobile-wordmark"><img class="brand-logo brand-logo-light" src="{{ url_for('static', filename='images/logo-light.png') }}" alt="Pointlabs"><img class="brand-logo brand-logo-dark" src="{{ url_for('static', filename='images/logo-dark.jpg') }}" alt="Pointlabs"></div><div class="app-identity" aria-label="Pointlabs One"><span>Pointlabs</span><img src="{{ url_for('static', filename='images/pointlabs-ring.png') }}" alt="">ne</div><div class="topbar-actions"><a class="top-message" href="{{ url_for('main.messages') }}" aria-label="Open messages">✦</a><button class="icon-button" aria-label="Toggle color theme" data-theme-toggle>◐</button></div></header>
