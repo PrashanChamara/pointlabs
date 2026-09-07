@@ -13,6 +13,8 @@ def create_app(config_name="development"):
     login_manager.init_app(app)
     csrf.init_app(app)
 
+    from app import models  # noqa: F401
+
     from app.auth import bp as auth_bp
     from app.main import bp as main_bp
 
