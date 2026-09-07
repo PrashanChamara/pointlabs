@@ -33,6 +33,11 @@ def create_app(config_name="development"):
         from app.services.seed import seed_reference_data
         db.create_all(); seed_reference_data(app.config.get("TEST_ADMIN_PASSWORD", "admin123"))
 
+    @app.cli.command("process-birthdays")
+    def process_birthdays():
+        from app.services.birthdays import process_birthdays as process
+        process()
+
     @login_manager.user_loader
     def load_user(user_id):
         from app.models.user import User
