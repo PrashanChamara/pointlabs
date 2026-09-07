@@ -84,7 +84,14 @@ def documents():
         suffix=Path(file.filename).suffix.lower()
         if suffix not in {".pdf", ".png", ".jpg", ".jpeg", ".webp"}: return "Only images and PDFs are allowed", 400
         folder=Path(current_app.instance_path)/"uploads"; folder.mkdir(parents=True, exist_ok=True)
-        safe=f"{current_user.id}_{int(datetime.utcnow().timestamp())}{suffix}"; file.save(folder/safe)
+        safe=f"{current_user.id}_{int(datetime.utcnow().timestamp())}{suffix}"
+        if suffix != ".pdf":
+            from PIL import Image
+            safe = Path(safe).with_suffix(".webp").name
+            image = Image.open(file.stream).convert("RGB")
+            image.thumbnail((2000, 2000)); image.save(folder/safe, "WEBP", quality=82, method=6)
+        else:
+            file.save(folder/safe)
         db.session.add(EmployeeDocument(user_id=current_user.id, category=request.form.get("category", "Other"), filename=file.filename, stored_path=safe)); db.session.commit(); flash("Document uploaded."); return redirect(url_for("main.documents"))
     return render_template("documents.html", documents=EmployeeDocument.query.filter_by(user_id=current_user.id).all())
 
