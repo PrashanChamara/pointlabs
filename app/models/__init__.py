@@ -1,6 +1,6 @@
 from app.models.organization import Department, Designation, Entity, Location
 from app.models.user import EmployeeProfile, PasswordResetCode, User
-from app.models.hr import BirthdayVoucher, EmployeeDocument, LeaveBalance, LeaveRequest, LeaveType, Notification
+from app.models.hr import BirthdayVoucher, DirectMessage, EmployeeDocument, LeaveBalance, LeaveRequest, LeaveType, Notification
 
 __all__ = [
     "Department",

@@ -1,17 +1,19 @@
 <aside class="sidebar" id="sidebar">
-  <a class="brand" href="{{ url_for('main.dashboard') }}"><span class="brand-mark">P</span><span>Pointlabs <b>One</b></span></a>
+  <a class="brand" href="{{ url_for('main.dashboard') }}" aria-label="Pointlabs One home">
+    <img class="brand-logo brand-logo-light" src="{{ url_for('static', filename='images/logo-light.png') }}" alt="Pointlabs">
+    <img class="brand-logo brand-logo-dark" src="{{ url_for('static', filename='images/logo-dark.jpg') }}" alt="Pointlabs">
+    <span class="one-lockup"><img src="{{ url_for('static', filename='images/pointlabs-ring.png') }}" alt="">ne</span>
+  </a>
   <div class="workspace-label">WORKSPACE</div>
-  <nav class="side-nav">
-    <a class="nav-link" href="{{ url_for('main.dashboard') }}"><span>⌂</span>Overview</a>
+  <nav class="side-nav" aria-label="Main navigation">
+    {% if current_user.is_administrator %}<a class="nav-link" href="{{ url_for('main.employees') }}"><span>◉</span>Employee list</a>{% endif %}
+    <a class="nav-link" href="{{ url_for('main.messages') }}"><span>✦</span>Messages</a>
+    <a class="nav-link" href="{{ url_for('main.dashboard') }}"><span>⌂</span>Dashboard</a>
+    {% if current_user.is_administrator %}<a class="nav-link" href="{{ url_for('main.reports') }}"><span>▥</span>Reports</a>{% endif %}
     <a class="nav-link" href="{{ url_for('main.leave') }}"><span>◷</span>My leave</a>
-    <a class="nav-link" href="{{ url_for('main.profile') }}"><span>◎</span>My profile</a>
-    <a class="nav-link" href="{{ url_for('main.documents') }}"><span>▣</span>Documents</a>
-    {% if current_user.is_administrator %}<div class="workspace-label">PEOPLE OPERATIONS</div>
-    <a class="nav-link" href="{{ url_for('main.employees') }}"><span>♙</span>Employees</a>
-    <a class="nav-link" href="{{ url_for('main.designations') }}"><span>◇</span>Designations</a>
-    <a class="nav-link" href="{{ url_for('main.birthdays') }}"><span>✦</span>Celebrations</a>{% endif %}
+    {% if current_user.is_administrator %}<div class="workspace-label">ADMINISTRATION</div><a class="nav-link" href="{{ url_for('main.admin_panel') }}"><span>⌘</span>Admin panel</a>{% endif %}
   </nav>
-  <div class="sidebar-footer"><div class="user-badge"><span class="avatar">{{ current_user.username[:1]|upper }}</span><div><b>{{ current_user.username }}</b><small>{{ 'Administrator' if current_user.is_administrator else 'Employee' }}</small></div></div><a href="{{ url_for('auth.logout') }}" class="logout">Sign out ↗</a></div>
+  <div class="sidebar-footer"><a class="account-card" href="{{ url_for('main.profile') }}" title="Open my profile"><span class="avatar avatar-large">{{ current_user.username[:1]|upper }}</span><span><b>{{ current_user.employee_profile.full_name if current_user.employee_profile else current_user.username }}</b><small>{{ 'Administrator' if current_user.is_administrator else 'Employee account' }}</small></span><i>›</i></a><a href="{{ url_for('auth.logout') }}" class="logout">Sign out <span>↗</span></a></div>
 </aside>
-<header class="topbar"><button class="icon-button mobile-menu" aria-label="Open menu" data-menu-toggle>☰</button><div class="mobile-brand">Pointlabs <b>One</b></div><div class="topbar-actions"><button class="icon-button" aria-label="Toggle theme" data-theme-toggle>◐</button><span class="notification-dot">●</span></div></header>
-<nav class="mobile-nav"><a href="{{ url_for('main.dashboard') }}">⌂<small>Home</small></a><a href="{{ url_for('main.leave') }}">◷<small>Leave</small></a><a href="{{ url_for('main.profile') }}">◎<small>Profile</small></a><a href="{{ url_for('main.documents') }}">▣<small>Files</small></a></nav>
+<header class="topbar"><button class="icon-button mobile-menu" aria-label="Open menu" data-menu-toggle>☰</button><div class="mobile-brand"><img src="{{ url_for('static', filename='images/pointlabs-ring.png') }}" alt="">Pointlabs <b>One</b></div><div class="topbar-actions"><a class="top-message" href="{{ url_for('main.messages') }}" aria-label="Open messages">✦</a><button class="icon-button" aria-label="Toggle color theme" data-theme-toggle>◐</button></div></header>
+<nav class="mobile-nav" aria-label="Mobile navigation"><a href="{{ url_for('main.dashboard') }}">⌂<small>Home</small></a><a href="{{ url_for('main.messages') }}">✦<small>Messages</small></a><a href="{{ url_for('main.leave') }}">◷<small>Leave</small></a><a href="{{ url_for('main.profile') }}">◎<small>Profile</small></a></nav>

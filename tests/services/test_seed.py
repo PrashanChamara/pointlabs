@@ -11,4 +11,6 @@ def test_seed_creates_reference_designations_and_admin(app):
         assert Designation.query.filter_by(is_reporting_officer_designation=True).count() == 11
         admin = User.query.filter_by(username="admin").one()
         assert admin.must_change_password and admin.check_password("admin123")
+        assert admin.employee_profile is not None
+        assert admin.employee_profile.full_name == "Pointlabs Administrator"
         db.session.remove()

@@ -1,1 +1,1 @@
-{"name":"Pointlabs One","short_name":"Pointlabs","start_url":"/","display":"standalone","background_color":"#dff4dc","theme_color":"#b58a2a","icons":[{"src":"/static/icon.png","sizes":"any","type":"image/png"}]}
+{"name":"Pointlabs One","short_name":"Pointlabs One","start_url":"/","display":"standalone","background_color":"#f4faf3","theme_color":"#b98a29","icons":[{"src":"/static/images/pointlabs-ring.png","sizes":"1254x1254","type":"image/png","purpose":"any maskable"},{"src":"/static/icon.png","sizes":"1254x1254","type":"image/png","purpose":"any"}]}

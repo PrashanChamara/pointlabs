@@ -2,17 +2,20 @@
 <html lang="en" data-theme="light">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#f7fbf6">
   <title>{% block title %}Pointlabs One{% endblock %}</title>
   <link rel="manifest" href="{{ url_for('static', filename='manifest.webmanifest') }}">
+  <link rel="icon" href="{{ url_for('static', filename='icon.png') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
   <script>document.documentElement.dataset.theme=localStorage.getItem('pointlabs-theme')||'light'</script>
 </head>
 <body>
   {% if current_user.is_authenticated %}{% include 'partials/navigation.html' %}{% endif %}
   <main class="app-main {% if not current_user.is_authenticated %}auth-main{% endif %}">
-    {% with messages = get_flashed_messages() %}{% if messages %}<div class="toast-stack">{% for message in messages %}<div class="toast">{{ message }}</div>{% endfor %}</div>{% endif %}{% endwith %}
+    {% with messages = get_flashed_messages() %}{% if messages %}<div class="toast-stack" aria-live="polite">{% for message in messages %}<div class="toast">{{ message }}</div>{% endfor %}</div>{% endif %}{% endwith %}
     {% block content %}{% endblock %}
   </main>
   <script src="{{ url_for('static', filename='app.js') }}"></script>
   <script>if('serviceWorker' in navigator) navigator.serviceWorker.register('/static/service-worker.js')</script>
-</body></html>
+</body>
+</html>

@@ -36,6 +36,8 @@ class EmployeeProfile(db.Model):
     reporting_officer_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
     user = db.relationship("User", foreign_keys=[user_id], backref=db.backref("employee_profile", uselist=False))
     designation = db.relationship("Designation")
+    department = db.relationship("Department")
+    location = db.relationship("Location")
     reporting_officer = db.relationship("User", foreign_keys=[reporting_officer_id])
 
 
