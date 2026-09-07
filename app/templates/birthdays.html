@@ -1,0 +1,1 @@
+<!doctype html><link rel="stylesheet" href="{{ url_for('static',filename='app.css') }}"><main><h1>Birthdays in the next three days</h1>{% for p in people %}<p>{{p.full_name}} — {{p.date_of_birth}}</p>{% else %}<p>No upcoming birthdays.</p>{% endfor %}</main>
