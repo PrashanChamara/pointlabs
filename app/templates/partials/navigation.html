@@ -1,0 +1,17 @@
+<aside class="sidebar" id="sidebar">
+  <a class="brand" href="{{ url_for('main.dashboard') }}"><span class="brand-mark">P</span><span>Pointlabs <b>One</b></span></a>
+  <div class="workspace-label">WORKSPACE</div>
+  <nav class="side-nav">
+    <a class="nav-link" href="{{ url_for('main.dashboard') }}"><span>⌂</span>Overview</a>
+    <a class="nav-link" href="{{ url_for('main.leave') }}"><span>◷</span>My leave</a>
+    <a class="nav-link" href="{{ url_for('main.profile') }}"><span>◎</span>My profile</a>
+    <a class="nav-link" href="{{ url_for('main.documents') }}"><span>▣</span>Documents</a>
+    {% if current_user.is_administrator %}<div class="workspace-label">PEOPLE OPERATIONS</div>
+    <a class="nav-link" href="{{ url_for('main.employees') }}"><span>♙</span>Employees</a>
+    <a class="nav-link" href="{{ url_for('main.designations') }}"><span>◇</span>Designations</a>
+    <a class="nav-link" href="{{ url_for('main.birthdays') }}"><span>✦</span>Celebrations</a>{% endif %}
+  </nav>
+  <div class="sidebar-footer"><div class="user-badge"><span class="avatar">{{ current_user.username[:1]|upper }}</span><div><b>{{ current_user.username }}</b><small>{{ 'Administrator' if current_user.is_administrator else 'Employee' }}</small></div></div><a href="{{ url_for('auth.logout') }}" class="logout">Sign out ↗</a></div>
+</aside>
+<header class="topbar"><button class="icon-button mobile-menu" aria-label="Open menu" data-menu-toggle>☰</button><div class="mobile-brand">Pointlabs <b>One</b></div><div class="topbar-actions"><button class="icon-button" aria-label="Toggle theme" data-theme-toggle>◐</button><span class="notification-dot">●</span></div></header>
+<nav class="mobile-nav"><a href="{{ url_for('main.dashboard') }}">⌂<small>Home</small></a><a href="{{ url_for('main.leave') }}">◷<small>Leave</small></a><a href="{{ url_for('main.profile') }}">◎<small>Profile</small></a><a href="{{ url_for('main.documents') }}">▣<small>Files</small></a></nav>
