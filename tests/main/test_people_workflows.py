@@ -19,6 +19,7 @@ def test_dashboard_uses_time_aware_greeting(client, app):
     response = client.get("/")
     assert response.status_code == 200
     assert b"Good " in response.data
+    assert b'class="mobile-nav"' not in response.data
 
 
 def test_administrator_directory_renders_for_profiles_with_reporting_relations(client, app):

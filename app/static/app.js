@@ -1,3 +1,26 @@
-const root=document.documentElement;
-document.querySelector('[data-theme-toggle]')?.addEventListener('click',()=>{const next=root.dataset.theme==='dark'?'light':'dark';root.dataset.theme=next;localStorage.setItem('pointlabs-theme',next)});
-document.querySelector('[data-menu-toggle]')?.addEventListener('click',()=>document.querySelector('#sidebar')?.classList.toggle('open'));
+const root = document.documentElement;
+const sidebar = document.querySelector('#sidebar');
+const menuButton = document.querySelector('[data-menu-toggle]');
+
+document.querySelector('[data-theme-toggle]')?.addEventListener('click', () => {
+  const next = root.dataset.theme === 'dark' ? 'light' : 'dark';
+  root.dataset.theme = next;
+  localStorage.setItem('pointlabs-theme', next);
+});
+
+const closeMenu = () => {
+  sidebar?.classList.remove('open');
+  menuButton?.setAttribute('aria-expanded', 'false');
+};
+
+menuButton?.addEventListener('click', () => {
+  const isOpen = sidebar?.classList.toggle('open');
+  menuButton.setAttribute('aria-expanded', String(Boolean(isOpen)));
+});
+
+document.addEventListener('click', (event) => {
+  if (window.innerWidth <= 680 && sidebar?.classList.contains('open') && !sidebar.contains(event.target) && !menuButton?.contains(event.target)) closeMenu();
+});
+document.addEventListener('keydown', (event) => { if (event.key === 'Escape') closeMenu(); });
+window.addEventListener('resize', () => { if (window.innerWidth > 680) closeMenu(); });
+sidebar?.querySelectorAll('a').forEach((link) => link.addEventListener('click', () => { if (window.innerWidth <= 680) closeMenu(); }));
