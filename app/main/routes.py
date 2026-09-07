@@ -7,6 +7,7 @@ from app.main import bp
 from app.models.hr import BirthdayVoucher, EmployeeDocument, LeaveBalance, LeaveRequest, LeaveType, Notification
 from app.models.organization import Designation
 from app.models.user import EmployeeProfile, User
+from app.services.email import send_email
 
 @bp.get("/")
 @login_required
@@ -33,6 +34,9 @@ def review_leave(request_id, action):
     if item.status == "approved":
         balance=LeaveBalance.query.filter_by(user_id=item.user_id, leave_type_id=item.leave_type_id).first()
         if balance: balance.available_days -= item.days
+        send_email("askhr@pointlabs.ai", "Leave approved", f"{item.user.employee_profile.full_name if item.user.employee_profile else item.user.username} has approved {item.leave_type.name} leave.")
+    elif item.user.email:
+        send_email(item.user.email, f"Leave request {item.status}", f"Your {item.leave_type.name} request was {item.status}. {item.reviewer_comment or ''}")
     db.session.add(Notification(user_id=item.user_id, message=f"Your leave request was {item.status}.")); db.session.commit(); return redirect(url_for("main.dashboard"))
 
 @bp.route("/admin/employees", methods=["GET", "POST"])
