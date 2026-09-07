@@ -24,6 +24,7 @@ def test_dashboard_uses_time_aware_greeting(client, app):
     assert b'mobile-wordmark' not in response.data
     assert b'data-menu-close' in response.data
     assert b'app-identity' in response.data
+    assert response.data.count(b'brand-logo-frame') == 2
 
 
 def test_administrator_directory_renders_for_profiles_with_reporting_relations(client, app):

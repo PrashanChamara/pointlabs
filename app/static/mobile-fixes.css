@@ -1,6 +1,11 @@
 /* Responsive navigation corrections kept separate from the core design system. */
-.brand-logo { width: 114px; height: 25px; object-fit: contain; }
-html[data-theme="dark"] .brand-logo-dark { width: 114px; height: 25px; object-fit: cover; object-position: center; transform: none; mix-blend-mode: normal; }
+.brand-logo-frame { display: block; width: 114px; height: 25px; overflow: hidden; }
+.brand-logo-frame:has(.brand-logo-dark) { display: none; }
+html[data-theme="dark"] .brand-logo-frame:has(.brand-logo-light) { display: none; }
+html[data-theme="dark"] .brand-logo-frame:has(.brand-logo-dark) { display: block; }
+.brand-logo { display: block; width: 114px; height: 25px; object-fit: contain; }
+.brand-logo-dark { position: relative; width: 228px; height: auto; max-width: none; top: -47px; left: -57px; transform: none; mix-blend-mode: normal; }
+html[data-theme="dark"] .brand-logo-dark { width: 228px; height: auto; object-fit: initial; object-position: initial; transform: none; mix-blend-mode: normal; }
 .drawer-brand-row { display: flex; align-items: center; justify-content: space-between; }
 .drawer-close { display: none; }
 .app-identity { position: absolute; left: 50%; transform: translateX(-50%); display: inline-flex; align-items: center; color: var(--ink); font-size: 15px; font-weight: 850; letter-spacing: -.045em; white-space: nowrap; }
@@ -11,10 +16,13 @@ html[data-theme="dark"] .brand-logo-dark { width: 114px; height: 25px; object-fi
   .app-main { padding-bottom: 36px; }
   .sidebar .brand { height: 36px; justify-content: flex-start; margin: 0; }
   .sidebar .brand::before { display: none; }
+  .sidebar .brand-logo-frame { display: block; }
   .sidebar .brand-logo-light { display: block !important; width: 114px; height: 25px; }
   .sidebar .brand-logo-dark { display: none !important; }
-  html[data-theme="dark"] .sidebar .brand-logo-light { display: none !important; }
-  html[data-theme="dark"] .sidebar .brand-logo-dark { display: block !important; width: 114px; height: 25px; }
+  .sidebar .brand-logo-frame:has(.brand-logo-dark) { display: none; }
+  html[data-theme="dark"] .sidebar .brand-logo-frame:has(.brand-logo-light) { display: none; }
+  html[data-theme="dark"] .sidebar .brand-logo-frame:has(.brand-logo-dark) { display: block; }
+  html[data-theme="dark"] .sidebar .brand-logo-dark { display: block !important; width: 228px; height: auto; }
   .drawer-close { display: grid; place-items: center; width: 34px; height: 34px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); color: var(--ink); font-size: 22px; line-height: 1; }
   .app-identity { font-size: 13px; }
   .app-identity img { width: 13px; height: 13px; }
