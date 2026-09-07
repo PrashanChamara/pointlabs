@@ -1,5 +1,6 @@
 from flask_login import UserMixin
 from werkzeug.security import check_password_hash, generate_password_hash
+from datetime import datetime
 
 from app.extensions import db
 
@@ -36,3 +37,11 @@ class EmployeeProfile(db.Model):
     user = db.relationship("User", foreign_keys=[user_id], backref=db.backref("employee_profile", uselist=False))
     designation = db.relationship("Designation")
     reporting_officer = db.relationship("User", foreign_keys=[reporting_officer_id])
+
+
+class PasswordResetCode(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
+    code = db.Column(db.String(12), nullable=False)
+    expires_at = db.Column(db.DateTime, nullable=False)
+    used_at = db.Column(db.DateTime, nullable=True)
