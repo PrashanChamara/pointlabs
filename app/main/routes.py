@@ -12,7 +12,7 @@ from app.main import bp
 from app.models.hr import DirectMessage, EmployeeDocument, LeaveBalance, LeaveRequest, LeaveType, Notification
 from app.models.organization import Department, Designation, Location
 from app.models.user import EmployeeProfile, User
-from app.services.email import send_email
+from app.services.email import send_leave_status_email, send_message_email
 
 
 def admin_only():
@@ -86,11 +86,12 @@ def review_leave(request_id, action):
         balance = LeaveBalance.query.filter_by(user_id=item.user_id, leave_type_id=item.leave_type_id).first()
         if balance:
             balance.available_days -= item.days
-    message = f"{display_name(item.user)}'s {item.leave_type.name} leave request was {result}."
+    employee_name = display_name(item.user)
+    message = f"{employee_name}'s {item.leave_type.name} leave request was {result}."
     db.session.add(Notification(user_id=item.user_id, message=message))
     db.session.commit()
     for address in {current_app.config.get("SMTP_FROM"), item.user.email} - {None, ""}:
-        send_email(address, f"Pointlabs One · Leave {result}", f"{message}\n{item.reviewer_comment or ''}")
+        send_leave_status_email(address, employee_name, item.leave_type.name, result, item.reviewer_comment)
     flash(f"Leave request {result}.")
     return redirect(url_for("main.dashboard"))
 
@@ -211,7 +212,7 @@ def messages():
         db.session.add(Notification(user_id=selected.id, message=f"New message from {display_name(current_user)}."))
         db.session.commit()
         if selected.email:
-            send_email(selected.email, "Pointlabs One · New message", f"{display_name(current_user)} sent you a message in Pointlabs One.\n\n{body}")
+            send_message_email(selected.email, display_name(current_user), body)
         return redirect(url_for("main.messages", recipient_id=selected.id))
     thread = []
     if selected:
