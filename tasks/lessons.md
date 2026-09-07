@@ -1,0 +1,1 @@
+[2026-09-07] | I treated missing spreadsheet fields as required migration data even though the sheet is only a designation and reporting-relationship reference. | Use the spreadsheet only to derive the requested designation catalog and reporting-officer flags; let administrators create and complete employee records manually unless the user explicitly asks for an import.

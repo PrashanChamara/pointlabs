@@ -1,0 +1,14 @@
+# Local configuration and runtime data
+.env
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+instance/
+
+# Temporary/reference source material; do not commit employee data or secrets
+Instructions.docx
+Staff Info.xlsx
+
+# Local isolated worktrees
+.worktrees/
