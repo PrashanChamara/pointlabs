@@ -45,7 +45,7 @@ def _valid_work_email(email):
 
 
 def _active_managers(exclude_user_id=None):
-    query = EmployeeProfile.query.join(User).filter(User.is_active.is_(True))
+    query = EmployeeProfile.query.join(User, EmployeeProfile.user_id == User.id).filter(User.is_active.is_(True))
     if exclude_user_id:
         query = query.filter(EmployeeProfile.user_id != exclude_user_id)
     return query.order_by(EmployeeProfile.full_name).all()
@@ -141,7 +141,8 @@ def dashboard():
     return render_template(
         "dashboard.html", pending=pending, today=today, notifications=notifications,
         unread_messages=DirectMessage.query.filter_by(recipient_id=current_user.id, is_read=False).count(),
-        greeting=greeting_for_hour(datetime.now().hour), people_count=EmployeeProfile.query.count(),
+        greeting=greeting_for_hour(datetime.now().hour),
+        people_count=EmployeeProfile.query.join(User, EmployeeProfile.user_id == User.id).filter(User.is_active.is_(True)).count(),
     )
 
 
@@ -758,7 +759,7 @@ def payroll():
     month = request.args.get("month", date.today().month, type=int)
     if month not in range(1, 13):
         month = date.today().month
-    profiles = EmployeeProfile.query.join(User).filter(User.is_active.is_(True)).order_by(EmployeeProfile.full_name).all()
+    profiles = EmployeeProfile.query.join(User, EmployeeProfile.user_id == User.id).filter(User.is_active.is_(True)).order_by(EmployeeProfile.full_name).all()
     payslips = Payslip.query.filter_by(payroll_year=year, payroll_month=month).order_by(Payslip.generated_at.desc()).all()
     return render_template("payroll.html", profiles=profiles, payslips=payslips, year=year, month=month, month_name=date(year, month, 1).strftime("%B"), date=date)
 
