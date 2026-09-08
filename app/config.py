@@ -43,6 +43,11 @@ class TestingConfig(BaseConfig):
     TESTING = True
     WTF_CSRF_ENABLED = False
     SQLALCHEMY_DATABASE_URI = "sqlite://"
+    # Tests must never inherit a developer's real SMTP configuration from .env.
+    SMTP_HOST = None
+    SMTP_FROM = None
+    SMTP_USERNAME = None
+    SMTP_PASSWORD = None
 
 
 CONFIGS = {

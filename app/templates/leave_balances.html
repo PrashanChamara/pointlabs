@@ -1,0 +1,23 @@
+{% extends 'base.html' %}
+{% block title %}Leave balances · Pointlabs One{% endblock %}
+{% block content %}
+<section class="page-head"><div><div class="eyebrow">LEAVE CONTROL</div><h1>Leave balances</h1><p>Review accruals and apply traceable HR adjustments. Balance changes are never silently overwritten.</p></div></section>
+<section class="balance-admin-layout">
+  <form class="form-card balance-adjustment" method="post">
+    <span class="section-kicker">NEW ADJUSTMENT</span><h2>Adjust an employee balance</h2>
+    <div class="field-grid">
+      <label>Employee<select name="user_id" required><option value="">Choose employee</option>{% for employee in employees %}<option value="{{ employee.user_id }}" {% if selected_user and selected_user.id == employee.user_id %}selected{% endif %}>{{ employee.full_name }}{% if employee.employee_code %} · {{ employee.employee_code }}{% endif %}</option>{% endfor %}</select></label>
+      <label>Leave type<select name="leave_type_id" required>{% for leave_type in leave_types %}<option value="{{ leave_type.id }}">{{ leave_type.name }}</option>{% endfor %}</select></label>
+      <label>Calendar year<input name="calendar_year" type="number" min="2020" max="2100" value="{{ year }}" required></label>
+      <label>Days to add/remove<input name="days" inputmode="decimal" placeholder="e.g. 2 or -1" required></label>
+      <label class="field-full">Reason / reference<textarea name="reason" required placeholder="Opening balance, approved correction, carry-forward adjustment…"></textarea></label>
+    </div>
+    <p class="form-hint">Use a positive number to add days and a negative number to reduce them. Every adjustment is retained with its author and reason.</p>
+    <button class="primary-action">Record adjustment</button>
+  </form>
+  <article class="panel balance-register">
+    <div class="panel-head"><div><span class="section-kicker">{{ year }} REGISTER</span><h2>Available leave</h2></div><form class="inline-filter"><input name="year" type="number" min="2020" max="2100" value="{{ year }}"><select name="user_id"><option value="">All active employees</option>{% for employee in employees %}<option value="{{ employee.user_id }}" {% if selected_user and selected_user.id == employee.user_id %}selected{% endif %}>{{ employee.full_name }}</option>{% endfor %}</select><button class="secondary-action">Filter</button></form></div>
+    <div class="table-wrap"><table class="data-table balance-table"><thead><tr><th>EMPLOYEE</th><th>LEAVE TYPE</th><th>ENTITLED</th><th>ACCRUED</th><th>USED</th><th>ADJUSTED</th><th>AVAILABLE</th></tr></thead><tbody>{% for balance in balances %}<tr><td><b>{{ balance.user.employee_profile.full_name if balance.user.employee_profile else balance.user.username }}</b><small>{{ balance.user.employee_profile.employee_code if balance.user.employee_profile else '' }}</small></td><td>{{ balance.leave_type.name }}</td><td>{{ '%.1f'|format(balance.entitled_days) }}</td><td>{{ '%.1f'|format(balance.accrued_days) }}</td><td>{{ '%.1f'|format(balance.utilized_days) }}</td><td>{{ '%+.1f'|format(balance.adjustment_days) }}</td><td><b>{{ '%.1f'|format(balance.available_days) }}</b>{% if balance.adjustments %}<small>{{ balance.adjustments|length }} audit entries</small>{% endif %}</td></tr>{% else %}<tr><td colspan="7"><div class="empty-state compact"><b>No active employee balances available</b></div></td></tr>{% endfor %}</tbody></table></div>
+  </article>
+</section>
+{% endblock %}

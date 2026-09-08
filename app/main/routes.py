@@ -11,18 +11,25 @@ from sqlalchemy import or_
 from app.extensions import db
 from app.main import bp
 from app.models.hr import (
-    CompensationRecord, DirectMessage, EmployeeDocument, LeaveBalance, LeaveRequest,
+    AuditEvent, CompensationRecord, DirectMessage, EmployeeDocument, LeaveBalance, LeaveRequest,
     LeaveType, Notification, OtherRequest, OtherRequestActivity, OtherRequestAttachment,
     Payslip, PublicHoliday,
 )
 from app.models.organization import Department, Designation, Entity, Location
 from app.models.user import EmployeeProfile, User
-from app.services.email import send_leave_status_email, send_message_email, send_notice_email
+from app.services.email import (
+    send_leave_confirmation_email, send_leave_status_email, send_message_email,
+    send_notice_email, send_payslip_email,
+)
 from app.services.files import store_uploaded_file
 from app.services.hr import (
-    apply_approved_leave_balance, deactivate_resigned_employees,
+    adjust_leave_balance, apply_approved_leave_balance, deactivate_resigned_employees,
     get_or_create_leave_balance, leave_days_for_profile, restore_cancelled_leave_balance,
     would_create_reporting_cycle,
+)
+from app.services.pdf import (
+    generate_leave_confirmation_pdf, generate_payslip_pdf, leave_confirmation_pdf_path,
+    payslip_pdf_path,
 )
 
 
@@ -135,7 +142,7 @@ def ensure_profile(user):
 @bp.get("/")
 @login_required
 def dashboard():
-    pending = LeaveRequest.query.filter_by(status="submitted").count() if current_user.is_administrator else 0
+    pending = LeaveRequest.query.filter(LeaveRequest.status.in_(("submitted", "returned", "cancellation_requested"))).count() if current_user.can_approve_leave else 0
     today = LeaveRequest.query.filter(LeaveRequest.status == "approved", LeaveRequest.start_date <= date.today(), LeaveRequest.end_date >= date.today()).all()
     notifications = Notification.query.filter_by(user_id=current_user.id, is_read=False).order_by(Notification.created_at.desc()).all()
     return render_template(
@@ -192,11 +199,63 @@ def leave():
     return render_template("leave.html", requests=LeaveRequest.query.filter_by(user_id=current_user.id).order_by(LeaveRequest.created_at.desc()).all(), leave_types=LeaveType.query.filter_by(is_active=True).all(), balances=balances)
 
 
+@bp.post("/leave/<int:request_id>/edit")
+@login_required
+def edit_leave(request_id):
+    """Allow an employee to correct a request only before a final decision."""
+    item = db.get_or_404(LeaveRequest, request_id)
+    if item.user_id != current_user.id:
+        return "Forbidden", 403
+    if item.status not in {"submitted", "returned"}:
+        return "This leave request can no longer be edited", 409
+    try:
+        start = date.fromisoformat(request.form.get("start_date", ""))
+        end = date.fromisoformat(request.form.get("end_date", ""))
+    except ValueError:
+        flash("Choose valid leave dates.")
+        return redirect(url_for("main.leave"))
+    if end < start:
+        flash("End date must be on or after the start date.")
+        return redirect(url_for("main.leave"))
+    leave_type = db.session.get(LeaveType, request.form.get("leave_type", type=int))
+    if leave_type is None or not leave_type.is_active:
+        flash("Choose an active leave type.")
+        return redirect(url_for("main.leave"))
+    profile = ensure_profile(current_user)
+    if profile.resignation_date and date.today() <= profile.resignation_date:
+        flash("Leave cannot be requested during a notice period.")
+        return redirect(url_for("main.leave"))
+    if leave_type.code == "ANNUAL" and profile.probation_end_date and start < profile.probation_end_date:
+        flash("Annual leave is unavailable until the recorded probation end date.")
+        return redirect(url_for("main.leave"))
+    days = leave_days_for_profile(profile, start, end)
+    if days <= 0:
+        flash("The selected period contains no working days after weekends and public holidays.")
+        return redirect(url_for("main.leave"))
+    balance = get_or_create_leave_balance(current_user, leave_type, start.year)
+    if leave_type.code != "LWP" and balance.available_days < days:
+        lwp_type = LeaveType.query.filter_by(code="LWP", is_active=True).first()
+        if lwp_type:
+            leave_type = lwp_type
+            flash("The revised days exceed the available balance and were recorded as Leave Without Pay for review.")
+    item.leave_type_id = leave_type.id
+    item.start_date, item.end_date, item.days = start, end, days
+    item.reason = request.form.get("reason", "").strip() or None
+    item.status, item.reviewer_comment = "submitted", None
+    db.session.add(AuditEvent(actor_id=current_user.id, entity_type="leave_request", entity_id=item.id, action="employee_edited", summary="Employee updated a pending leave request before final review."))
+    manager = profile.reporting_officer
+    if manager and manager.is_active:
+        db.session.add(Notification(user_id=manager.id, message=f"{display_name(current_user)} updated a {leave_type.name} request for review."))
+    db.session.commit()
+    flash("Leave request updated and returned to your reporting manager for review.")
+    return redirect(url_for("main.leave"))
+
+
 @bp.post("/leave/<int:request_id>/<action>")
 @login_required
 def review_leave(request_id, action):
     item = db.get_or_404(LeaveRequest, request_id)
-    permitted = current_user.is_administrator or (item.user.employee_profile and item.user.employee_profile.reporting_officer_id == current_user.id)
+    permitted = current_user.has_hr_access or (item.user.employee_profile and item.user.employee_profile.reporting_officer_id == current_user.id)
     if not permitted:
         return "Forbidden", 403
     if action == "approve-cancellation":
@@ -204,18 +263,20 @@ def review_leave(request_id, action):
             return "Invalid leave cancellation state", 409
         item.status, item.cancelled_at, item.cancellation_reviewer_id = "cancelled", datetime.utcnow(), current_user.id
         restore_cancelled_leave_balance(item)
+        db.session.add(AuditEvent(actor_id=current_user.id, entity_type="leave_request", entity_id=item.id, action="cancellation_approved", summary="Approved leave cancellation and restored the applicable balance."))
         db.session.add(Notification(user_id=item.user_id, message=f"Your cancellation request for {item.leave_type.name} has been approved."))
         db.session.commit()
         flash("Leave cancellation approved and balance restored.")
-        return redirect(url_for("main.dashboard"))
+        return redirect(url_for("main.approvals"))
     if action == "reject-cancellation":
         if item.status != "cancellation_requested":
             return "Invalid leave cancellation state", 409
         item.status, item.cancellation_reviewer_id = "approved", current_user.id
+        db.session.add(AuditEvent(actor_id=current_user.id, entity_type="leave_request", entity_id=item.id, action="cancellation_declined", summary="Declined leave cancellation; the approved leave remains in effect."))
         db.session.add(Notification(user_id=item.user_id, message=f"Your cancellation request for {item.leave_type.name} was declined."))
         db.session.commit()
         flash("Leave cancellation declined.")
-        return redirect(url_for("main.dashboard"))
+        return redirect(url_for("main.approvals"))
     if item.status not in {"submitted", "returned"}:
         return "This leave request is no longer awaiting a decision", 409
     result = {"approve": "approved", "reject": "rejected", "return": "returned"}.get(action)
@@ -225,14 +286,45 @@ def review_leave(request_id, action):
     item.approver_id = current_user.id
     if result == "approved":
         apply_approved_leave_balance(item)
+        db.session.flush()
+        try:
+            stored_path, filename = generate_leave_confirmation_pdf(item)
+        except Exception:
+            current_app.logger.exception("Leave confirmation PDF generation failed for leave request %s", item.id)
+            item.confirmation_generation_error = "The leave confirmation document could not be generated."
+        else:
+            item.confirmation_stored_path = stored_path
+            item.confirmation_filename = filename
+            item.confirmation_generated_at = datetime.utcnow()
+            item.confirmation_generation_error = None
     employee_name = display_name(item.user)
+    db.session.add(AuditEvent(
+        actor_id=current_user.id, entity_type="leave_request", entity_id=item.id,
+        action=result, summary=f"{result.title()} {item.leave_type.name} leave request for {employee_name}.",
+    ))
     message = f"{employee_name}'s {item.leave_type.name} leave request was {result}."
     db.session.add(Notification(user_id=item.user_id, message=message))
     db.session.commit()
-    for address in {current_app.config.get("SMTP_FROM"), item.user.email} - {None, ""}:
-        send_leave_status_email(address, employee_name, item.leave_type.name, result, item.reviewer_comment)
-    flash(f"Leave request {result}.")
-    return redirect(url_for("main.dashboard"))
+    if result == "approved" and item.confirmation_stored_path and item.user.email:
+        confirmation_path = leave_confirmation_pdf_path(item.confirmation_stored_path)
+        if confirmation_path.is_file() and send_leave_confirmation_email(
+            item.user.email,
+            employee_name,
+            item.leave_type.name,
+            f"{item.start_date:%d %b %Y} – {item.end_date:%d %b %Y}",
+            confirmation_path,
+            item.confirmation_filename,
+        ):
+            item.confirmation_emailed_at = datetime.utcnow()
+            db.session.commit()
+    elif result != "approved":
+        for address in {current_app.config.get("SMTP_FROM"), item.user.email} - {None, ""}:
+            send_leave_status_email(address, employee_name, item.leave_type.name, result, item.reviewer_comment)
+    if result == "approved" and item.confirmation_generation_error:
+        flash("Leave approved, but the confirmation PDF could not be generated. HR can retry after resolving the server issue.")
+    else:
+        flash(f"Leave request {result}.")
+    return redirect(url_for("main.approvals"))
 
 
 @bp.post("/leave/<int:request_id>/cancel")
@@ -243,6 +335,7 @@ def cancel_leave(request_id):
         return "Forbidden", 403
     if item.status in {"submitted", "returned"}:
         item.status, item.cancelled_at = "cancelled", datetime.utcnow()
+        db.session.add(AuditEvent(actor_id=current_user.id, entity_type="leave_request", entity_id=item.id, action="cancelled", summary="Employee cancelled a pending leave request."))
         db.session.commit()
         flash("Pending leave request cancelled.")
         return redirect(url_for("main.leave"))
@@ -251,12 +344,106 @@ def cancel_leave(request_id):
     item.status = "cancellation_requested"
     item.cancellation_requested_at = datetime.utcnow()
     item.cancellation_reason = request.form.get("reason", "").strip() or None
+    db.session.add(AuditEvent(actor_id=current_user.id, entity_type="leave_request", entity_id=item.id, action="cancellation_requested", summary="Employee requested cancellation of approved leave."))
     manager = item.user.employee_profile.reporting_officer if item.user.employee_profile else None
     if manager and manager.is_active:
         db.session.add(Notification(user_id=manager.id, message=f"{display_name(current_user)} requested cancellation of {item.leave_type.name}."))
     db.session.commit()
     flash("Cancellation request submitted to your reporting manager.")
     return redirect(url_for("main.leave"))
+
+
+@bp.get("/leave/<int:request_id>/confirmation.pdf")
+@login_required
+def download_leave_confirmation(request_id):
+    item = db.get_or_404(LeaveRequest, request_id)
+    is_reporting_manager = bool(item.user.employee_profile and item.user.employee_profile.reporting_officer_id == current_user.id)
+    if not (current_user.has_hr_access or item.user_id == current_user.id or is_reporting_manager):
+        return "Forbidden", 403
+    if not item.confirmation_stored_path:
+        abort(404)
+    path = leave_confirmation_pdf_path(item.confirmation_stored_path)
+    if not path.is_file():
+        current_app.logger.error("Leave confirmation file is missing for request %s", item.id)
+        abort(404)
+    return send_from_directory(path.parent, path.name, as_attachment=True, download_name=item.confirmation_filename)
+
+
+def _leave_review_scope():
+    """Return leave requests this user is authorised to decide."""
+    query = LeaveRequest.query.order_by(LeaveRequest.created_at.asc())
+    if current_user.has_hr_access:
+        return query
+    return query.join(User, LeaveRequest.user_id == User.id).join(
+        EmployeeProfile, EmployeeProfile.user_id == User.id,
+    ).filter(EmployeeProfile.reporting_officer_id == current_user.id)
+
+
+@bp.get("/approvals")
+@login_required
+def approvals():
+    """One operational inbox for manager leave and HR service decisions."""
+    if not current_user.can_approve_leave:
+        return "Forbidden", 403
+    leave_items = _leave_review_scope().filter(
+        LeaveRequest.status.in_(("submitted", "returned", "cancellation_requested")),
+    ).all()
+    request_items = []
+    if current_user.has_hr_access:
+        request_items = OtherRequest.query.filter(
+            OtherRequest.status.in_(("submitted", "resubmitted", "more_information_required", "in_review", "in_progress")),
+        ).order_by(OtherRequest.updated_at.asc()).all()
+    return render_template("approvals.html", leave_items=leave_items, request_items=request_items)
+
+
+@bp.route("/admin/leave-balances", methods=["GET", "POST"])
+@login_required
+def leave_balances():
+    denied = admin_only()
+    if denied:
+        return denied
+    if request.method == "POST":
+        user = db.session.get(User, request.form.get("user_id", type=int))
+        leave_type = db.session.get(LeaveType, request.form.get("leave_type_id", type=int))
+        year = request.form.get("calendar_year", type=int) or date.today().year
+        reason = request.form.get("reason", "").strip()
+        try:
+            days = float(request.form.get("days", ""))
+        except ValueError:
+            days = None
+        if user is None or leave_type is None or not reason or days is None or not -366 <= days <= 366:
+            flash("Choose an employee and leave type, enter a reasonable adjustment, and explain why it is needed.")
+            return redirect(url_for("main.leave_balances", year=year))
+        balance = get_or_create_leave_balance(user, leave_type, year)
+        db.session.flush()
+        adjust_leave_balance(balance, days, reason, actor=current_user)
+        db.session.add(AuditEvent(
+            actor_id=current_user.id, entity_type="leave_balance", entity_id=balance.id,
+            action="adjusted", summary=f"Adjusted {leave_type.name} by {days:+.1f} days for {year}: {reason}",
+        ))
+        db.session.commit()
+        flash("Leave balance adjustment recorded. The adjustment history has been retained.")
+        return redirect(url_for("main.leave_balances", year=year, user_id=user.id))
+
+    year = request.args.get("year", date.today().year, type=int)
+    selected_user_id = request.args.get("user_id", type=int)
+    employees = EmployeeProfile.query.join(User, EmployeeProfile.user_id == User.id).filter(User.is_active.is_(True)).order_by(EmployeeProfile.full_name).all()
+    leave_types = LeaveType.query.filter_by(is_active=True).order_by(LeaveType.name).all()
+    selected_user = db.session.get(User, selected_user_id) if selected_user_id else None
+    if selected_user and not selected_user.employee_profile:
+        selected_user = None
+    target_users = [selected_user] if selected_user else [profile.user for profile in employees]
+    balances = []
+    for user in target_users:
+        if user is None:
+            continue
+        for leave_type in leave_types:
+            balances.append(get_or_create_leave_balance(user, leave_type, year))
+    db.session.commit()
+    return render_template(
+        "leave_balances.html", balances=balances, employees=employees, leave_types=leave_types,
+        year=year, selected_user=selected_user,
+    )
 
 
 @bp.get("/admin/employees")
@@ -321,10 +508,9 @@ def employee_new():
         if employee_code and EmployeeProfile.query.filter_by(employee_code=employee_code).first():
             flash("That employee code is already in use.")
             return redirect(url_for("main.employee_new"))
-        role = request.form.get("role", "employee")
-        if role not in {"employee", "manager", "hr"} or (role == "hr" and not current_user.is_administrator):
-            role = "employee"
-        user = User(username=username, email=email, role=role, must_change_password=True)
+        # A designation is a job title. Access rights are managed separately on edit
+        # by an administrator; reporting-manager assignments drive leave approvals.
+        user = User(username=username, email=email, role="employee", must_change_password=True)
         user.set_password(request.form.get("password") or "ChangeMe123!")
         db.session.add(user)
         db.session.flush()
@@ -379,9 +565,9 @@ def employee_edit(user_id):
             flash("Enter a unique, valid work email address.")
             return redirect(url_for("main.employee_edit", user_id=user_id))
         employee.email = email
-        role = request.form.get("role", employee.role)
-        if role in {"employee", "manager", "hr"} and (role != "hr" or current_user.is_administrator):
-            employee.role = role
+        # Keep administrative access intentional and distinct from designation.
+        if current_user.is_administrator:
+            employee.role = "hr" if request.form.get("hr_access") else "employee"
         try:
             _set_profile_from_form(profile)
             _store_employee_documents(employee, request.files.getlist("documents"), request.form.get("document_category", "Employee record"))
@@ -431,8 +617,17 @@ def employee_export():
 def profile():
     profile = ensure_profile(current_user)
     if request.method == "POST":
-        profile.phone, profile.address = request.form.get("phone", "").strip() or None, request.form.get("address", "").strip() or None
-        current_user.email = request.form.get("email", "").strip() or None
+        work_email = request.form.get("email", "").strip().lower() or None
+        conflicting = User.query.filter(User.email == work_email, User.id != current_user.id).first() if work_email else None
+        if conflicting or not _valid_work_email(work_email):
+            flash("Enter a unique, valid work email address.")
+            return redirect(url_for("main.profile"))
+        profile.preferred_name = request.form.get("preferred_name", "").strip() or None
+        profile.phone = request.form.get("phone", "").strip() or None
+        profile.personal_email = request.form.get("personal_email", "").strip() or None
+        profile.address = request.form.get("address", "").strip() or None
+        profile.current_address = profile.address
+        current_user.email = work_email
         db.session.commit()
         flash("Your profile has been updated.")
         return redirect(url_for("main.profile"))
@@ -572,7 +767,12 @@ def admin_panel():
     denied = admin_only()
     if denied:
         return denied
-    return render_template("admin_panel.html", people_count=EmployeeProfile.query.count(), documents_count=EmployeeDocument.query.count(), pending_count=LeaveRequest.query.filter_by(status="submitted").count())
+    return render_template(
+        "admin_panel.html", people_count=EmployeeProfile.query.count(),
+        documents_count=EmployeeDocument.query.count(),
+        pending_count=LeaveRequest.query.filter(LeaveRequest.status.in_(("submitted", "returned", "cancellation_requested"))).count(),
+        pending_request_count=OtherRequest.query.filter(OtherRequest.status.in_(("submitted", "resubmitted", "more_information_required", "in_review", "in_progress"))).count(),
+    )
 
 
 @bp.route("/admin/designations", methods=["GET", "POST"])
@@ -726,10 +926,56 @@ def public_holidays():
         except (KeyError, ValueError):
             flash("Choose a valid public holiday date.")
             return redirect(url_for("main.public_holidays"))
-        db.session.add(PublicHoliday(name=request.form.get("name", "").strip(), holiday_date=holiday_date, location_id=request.form.get("location_id", type=int), entity_id=request.form.get("entity_id", type=int)))
+        name = request.form.get("name", "").strip()
+        if not name:
+            flash("Enter a public holiday name.")
+            return redirect(url_for("main.public_holidays"))
+        existing = PublicHoliday.query.filter_by(
+            name=name, holiday_date=holiday_date,
+            location_id=request.form.get("location_id", type=int), entity_id=request.form.get("entity_id", type=int),
+        ).first()
+        if existing:
+            flash("That holiday already exists for this entity/location scope.")
+            return redirect(url_for("main.public_holidays"))
+        db.session.add(PublicHoliday(name=name, holiday_date=holiday_date, location_id=request.form.get("location_id", type=int), entity_id=request.form.get("entity_id", type=int)))
         db.session.commit(); flash("Public holiday added.")
         return redirect(url_for("main.public_holidays"))
     return render_template("public_holidays.html", holidays=PublicHoliday.query.order_by(PublicHoliday.holiday_date).all(), locations=Location.query.filter_by(is_active=True).all(), entities=Entity.query.filter_by(is_active=True).all())
+
+
+@bp.post("/admin/public-holidays/<int:holiday_id>/edit")
+@login_required
+def edit_public_holiday(holiday_id):
+    denied = admin_only()
+    if denied:
+        return denied
+    item = db.get_or_404(PublicHoliday, holiday_id)
+    try:
+        holiday_date = date.fromisoformat(request.form.get("holiday_date", ""))
+    except ValueError:
+        flash("Choose a valid public holiday date.")
+        return redirect(url_for("main.public_holidays"))
+    name = request.form.get("name", "").strip()
+    if not name:
+        flash("Enter a public holiday name.")
+        return redirect(url_for("main.public_holidays"))
+    duplicate = PublicHoliday.query.filter(
+        PublicHoliday.id != item.id,
+        PublicHoliday.name == name,
+        PublicHoliday.holiday_date == holiday_date,
+        PublicHoliday.entity_id == request.form.get("entity_id", type=int),
+        PublicHoliday.location_id == request.form.get("location_id", type=int),
+    ).first()
+    if duplicate:
+        flash("That holiday already exists for this entity/location scope.")
+        return redirect(url_for("main.public_holidays"))
+    item.name, item.holiday_date = name, holiday_date
+    item.entity_id = request.form.get("entity_id", type=int)
+    item.location_id = request.form.get("location_id", type=int)
+    item.is_active = bool(request.form.get("is_active"))
+    db.session.commit()
+    flash("Public holiday updated. Leave calculations will use the new scoped calendar.")
+    return redirect(url_for("main.public_holidays"))
 
 
 def _money(value):
@@ -759,9 +1005,13 @@ def payroll():
     month = request.args.get("month", date.today().month, type=int)
     if month not in range(1, 13):
         month = date.today().month
-    profiles = EmployeeProfile.query.join(User, EmployeeProfile.user_id == User.id).filter(User.is_active.is_(True)).order_by(EmployeeProfile.full_name).all()
+    selected_user_id = request.args.get("user_id", type=int)
+    profile_query = EmployeeProfile.query.join(User, EmployeeProfile.user_id == User.id).filter(User.is_active.is_(True))
+    if selected_user_id:
+        profile_query = profile_query.filter(EmployeeProfile.user_id == selected_user_id)
+    profiles = profile_query.order_by(EmployeeProfile.full_name).all()
     payslips = Payslip.query.filter_by(payroll_year=year, payroll_month=month).order_by(Payslip.generated_at.desc()).all()
-    return render_template("payroll.html", profiles=profiles, payslips=payslips, year=year, month=month, month_name=date(year, month, 1).strftime("%B"), date=date)
+    return render_template("payroll.html", profiles=profiles, payslips=payslips, year=year, month=month, month_name=date(year, month, 1).strftime("%B"), date=date, selected_user_id=selected_user_id)
 
 
 @bp.post("/admin/payroll/compensation/<int:user_id>")
@@ -811,10 +1061,33 @@ def generate_payslip(user_id):
         template_country=country, currency=record.currency, basic_salary=record.basic_salary, allowances=record.allowances,
         other_earnings=record.other_earnings, wht=record.wht, epf=record.epf, etf=record.etf, paye=record.paye,
         other_deductions=record.other_deductions, gross_salary=record.gross_salary, total_deductions=record.total_deductions,
-        net_salary=record.net_salary, status="generated", generated_by_id=current_user.id,
+        net_salary=record.net_salary, status="generating", generated_by_id=current_user.id,
     )
-    db.session.add(payslip); db.session.add(Notification(user_id=user.id, message=f"Your {date(year, month, 1).strftime('%B %Y')} payslip is available.")); db.session.commit()
-    flash("Payslip generated. A new version preserves prior payroll history.")
+    db.session.add(payslip)
+    db.session.flush()
+    try:
+        stored_path, filename = generate_payslip_pdf(payslip)
+    except Exception:
+        current_app.logger.exception("Payslip PDF generation failed for payslip %s", payslip.id)
+        payslip.status = "generation_failed"
+        payslip.pdf_generation_error = "The payslip PDF could not be generated."
+        db.session.add(AuditEvent(actor_id=current_user.id, entity_type="payslip", entity_id=payslip.id, action="pdf_generation_failed", summary="Server-side payslip PDF generation failed."))
+        db.session.commit()
+        flash("Payslip record created, but the PDF could not be generated. No email was sent.")
+        return redirect(url_for("main.payslip_detail", payslip_id=payslip.id))
+    payslip.pdf_stored_path = stored_path
+    payslip.pdf_filename = filename
+    payslip.pdf_generated_at = datetime.utcnow()
+    payslip.pdf_generation_error = None
+    payslip.status = "generated"
+    period = date(year, month, 1).strftime("%B %Y")
+    db.session.add(Notification(user_id=user.id, message=f"Your {period} payslip is available."))
+    db.session.add(AuditEvent(actor_id=current_user.id, entity_type="payslip", entity_id=payslip.id, action="pdf_generated", summary=f"Generated payslip PDF version {version} for {period}."))
+    db.session.commit()
+    if user.email and send_payslip_email(user.email, display_name(user), period, payslip_pdf_path(stored_path), filename):
+        payslip.emailed_at = datetime.utcnow()
+        db.session.commit()
+    flash("Payslip PDF generated. A new version preserves prior payroll history.")
     return redirect(url_for("main.payslip_detail", payslip_id=payslip.id))
 
 
@@ -836,6 +1109,21 @@ def payslip_detail(payslip_id):
     return render_template("payslip.html", payslip=payslip, profile=ensure_profile(payslip.user), period=date(payslip.payroll_year, payslip.payroll_month, 1))
 
 
+@bp.get("/payslips/<int:payslip_id>/download")
+@login_required
+def download_payslip(payslip_id):
+    payslip = db.get_or_404(Payslip, payslip_id)
+    if not (current_user.has_hr_access or payslip.user_id == current_user.id):
+        return "Forbidden", 403
+    if not payslip.pdf_stored_path:
+        abort(404)
+    path = payslip_pdf_path(payslip.pdf_stored_path)
+    if not path.is_file():
+        current_app.logger.error("Payslip PDF is missing for payslip %s", payslip.id)
+        abort(404)
+    return send_from_directory(path.parent, path.name, as_attachment=True, download_name=payslip.pdf_filename)
+
+
 @bp.post("/admin/payslips/<int:payslip_id>/email")
 @login_required
 def email_payslip(payslip_id):
@@ -843,9 +1131,17 @@ def email_payslip(payslip_id):
     if denied:
         return denied
     payslip = db.get_or_404(Payslip, payslip_id)
-    if payslip.user.email:
-        send_notice_email(payslip.user.email, "Pointlabs One · Payslip available", "Your payslip is now available securely in Pointlabs One.")
-        payslip.emailed_at = datetime.utcnow(); db.session.commit(); flash("Payslip availability email sent.")
+    path = payslip_pdf_path(payslip.pdf_stored_path) if payslip.pdf_stored_path else None
+    if not path or not path.is_file():
+        flash("No generated PDF is available to send for this payslip.")
+    elif payslip.user.email:
+        period = date(payslip.payroll_year, payslip.payroll_month, 1).strftime("%B %Y")
+        if send_payslip_email(payslip.user.email, display_name(payslip.user), period, path, payslip.pdf_filename):
+            payslip.emailed_at = datetime.utcnow()
+            db.session.commit()
+            flash("Confidential payslip PDF email sent.")
+        else:
+            flash("Payslip email could not be sent. The PDF remains available securely in the portal.")
     else:
         flash("This employee has no work email address.")
     return redirect(url_for("main.payslip_detail", payslip_id=payslip.id))

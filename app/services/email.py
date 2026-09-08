@@ -8,7 +8,7 @@ import smtplib
 from flask import current_app, render_template
 
 
-def send_email(to_address, subject, body, template_name="emails/notice.html", **context):
+def send_email(to_address, subject, body, template_name="emails/notice.html", attachments=None, **context):
     """Deliver a branded HTML message with a readable plain-text alternative."""
     config = current_app.config
     if not all([config.get("SMTP_HOST"), config.get("SMTP_FROM")]):
@@ -39,6 +39,16 @@ def send_email(to_address, subject, body, template_name="emails/notice.html", **
             filename="pointlabs-ring.png",
             disposition="inline",
         )
+
+    for attachment in attachments or []:
+        path, filename, mime_type = attachment
+        try:
+            payload = Path(path).read_bytes()
+            maintype, subtype = mime_type.split("/", 1)
+        except (OSError, ValueError):
+            current_app.logger.exception("Pointlabs One email attachment could not be read: %s", filename)
+            return False
+        message.add_attachment(payload, maintype=maintype, subtype=subtype, filename=filename)
 
     try:
         with smtplib.SMTP(config["SMTP_HOST"], config["SMTP_PORT"]) as smtp:
@@ -115,4 +125,34 @@ def send_notice_email(to_address, subject, body, preheader=None):
         body,
         "emails/notice.html",
         preheader=preheader or subject,
+    )
+
+
+def send_payslip_email(to_address, employee_name, payroll_period, pdf_path, filename):
+    """Deliver a confidential payslip only after its private PDF exists."""
+    return send_email(
+        to_address,
+        f"Your Pointlabs Payslip – {payroll_period}",
+        f"Hello {employee_name},\n\nYour {payroll_period} payslip is available. "
+        "This is a confidential document; please keep it secure. A PDF copy is attached.",
+        "emails/notice.html",
+        preheader=f"Your confidential {payroll_period} payslip is attached.",
+        attachments=[(pdf_path, filename, "application/pdf")],
+    )
+
+
+def send_leave_confirmation_email(to_address, employee_name, leave_type, leave_dates, pdf_path, filename):
+    """Deliver an approved leave confirmation with its official PDF attached."""
+    return send_email(
+        to_address,
+        "Leave Approved – Pointlabs",
+        f"Hello {employee_name},\n\nYour {leave_type} leave request for {leave_dates} has been approved. "
+        "Please find your official Leave Confirmation attached.",
+        "emails/leave_status.html",
+        employee_name=employee_name,
+        leave_type=leave_type,
+        status="approved",
+        comment=None,
+        preheader="Your official Leave Confirmation is attached.",
+        attachments=[(pdf_path, filename, "application/pdf")],
     )

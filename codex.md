@@ -6,11 +6,11 @@ Build Pointlabs One, a mobile-first, installable PWA for Pointlabs HR. It must p
 
 ### Required capabilities
 
-- Roles are data-configured, not hard-coded. Admins manage users, roles, employee details, and reporting relationships. Reporting officers can view team/leave information but cannot add, edit, or delete HR data. Everyone can see today's employees on leave.
+- Designations are data-configured job titles, not access roles. Admins manage employee details and reporting relationships; reporting managers can decide authorised direct-report leave, while separate HR access controls administration. Everyone can see today's employees on leave.
 - Employees submit leave requests. Their reporting officer receives an in-app and email notification and can approve, reject, or return the request for more information. Approved requests notify `askhr@pointlabs.ai`; rejection/return notifies the employee.
 - The admin dashboard shows leave data and balances, upcoming and current leave, HR data, upcoming birthdays, and an action to record whether a gift voucher is included. Birthday emails are sent on the birthday; an admin reminder appears three days before. Voucher emails may include a code and/or attached voucher image.
 - Accounts are created with an employee code, user ID, registered email, temporary password, and a compulsory first-login password change. Password recovery uses username plus registered email and an emailed OTP.
-- Employee records include identity, employment, reporting, contact, banking, leave-balance, and document information described in the source brief. Employees may update only their profile image, phone number, and personal address; admins control all other fields.
+- Employee records include identity, employment, reporting, contact, banking, leave-balance, salary and document information described in the source brief. Employees may update safe personal contact fields; HR controls employment, salary, identity and banking fields.
 - Store uploaded images compressed and converted to WebP. Accept images and PDFs only; PDFs are stored uncompressed.
 - Reports require filtering, pagination where needed, and Excel export.
 - Use Python with HTML/CSS/JavaScript. Use SQLite for local testing and MySQL in deployment. Email credentials will be supplied in environment variables.
@@ -71,3 +71,17 @@ Administrators manually create and maintain employee records, assigning temporar
 ### Approved dashboard, reporting, and experience model
 
 Administrators see leave approvals, balances, upcoming/current leave, birthday reminders, HR activity, and email-delivery issues. Reporting officers see restricted authorized-team data; everyone sees today's employees on leave. Reports have filtering, sorting, pagination, and Excel export. A daily birthday task creates a three-day admin reminder and sends the birthday email, with optional voucher code/image, on the birthday. The UI uses supplied brand assets, light/dark themes, accessible responsive layouts, and PWA installation/offline shell support. Include configurable approval delegation, audit trails, company announcements, and a leave calendar.
+
+### Generated HR documents
+
+Payslips and approved Leave Confirmations are server-generated A4 PDFs using ReportLab. PDFs are written under the private Flask instance directory (`instance/generated/`), never under static assets, and are served only through authenticated, role-checked download routes. Every payslip version has its own random internal filename and user-facing filename; its PDF is generated before the payslip is marked generated. Approved leave receives one unique `PL-LEAVE-…` reference and a stored confirmation PDF. Cancelling approved leave preserves its original confirmation for audit history. Transactional payslip and approval emails attach the stored PDF when SMTP is configured; tests disable SMTP by default and mock it explicitly.
+
+### HR operations workflow
+
+The administration hub is the canonical entry point for employee records, approvals, leave balances, payroll/compensation, public holidays, documents, master data and reports. HR/Admin users record balance corrections as additive or subtractive audited adjustments; they do not overwrite a balance. Balances are calculated by calendar year using entitlement, accrual, carry-forward, adjustments and approved leave.
+
+Employees may edit only their own submitted or returned leave before a final decision, and their own eligible HR service requests. Each edit revalidates public holidays, weekends, probation, notice-period rules and available balance; it returns the request to the reporting manager. Employees can cancel eligible requests, while approved leave uses a separate cancellation-approval workflow. Reporting-manager assignment routes leave approvals; it is not a job designation or a generic user role.
+
+Designation is strictly a job title. New employee accounts default to employee access. Only an administrator may grant the separate HR administration permission on an existing account. The employee profile supports safe self-service fields (preferred name, work/personal email, phone and address); salary, employment, identity and banking changes remain HR-controlled/audited.
+
+Payroll is an effective-dated compensation ledger. HR records basic salary, allowances, other earnings and statutory/other deductions, then generates a versioned monthly payslip. Public holidays can be global or scoped to an entity and/or location; leave calculations apply only global holidays and holidays matching the employee's assigned entity/location.

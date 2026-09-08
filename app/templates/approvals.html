@@ -1,0 +1,38 @@
+{% extends 'base.html' %}
+{% block title %}Approvals · Pointlabs One{% endblock %}
+{% block content %}
+<section class="page-head">
+  <div><div class="eyebrow">OPERATIONS INBOX</div><h1>Approvals</h1><p>Review requests assigned to you. Reporting managers decide their direct reports’ leave; HR can process service requests.</p></div>
+</section>
+<section class="approval-grid">
+  <article class="panel">
+    <div class="panel-head"><div><span class="section-kicker">LEAVE DECISIONS</span><h2>{{ leave_items|length }} awaiting action</h2></div></div>
+    {% for item in leave_items %}
+      <article class="approval-card">
+        <div class="approval-card-head"><div><b>{{ item.user.employee_profile.full_name if item.user.employee_profile else item.user.username }}</b><small>{{ item.leave_type.name }} · {{ item.days }} working days</small></div><span class="status {{ item.status }}">{{ item.status|replace('_', ' ')|title }}</span></div>
+        <p>{{ item.start_date.strftime('%d %b %Y') }} — {{ item.end_date.strftime('%d %b %Y') }}{% if item.reason %} · {{ item.reason }}{% endif %}</p>
+        {% if item.status == 'cancellation_requested' %}
+          <form class="approval-actions" method="post" action="{{ url_for('main.review_leave', request_id=item.id, action='approve-cancellation') }}"><button class="primary-action">Approve cancellation</button></form>
+          <form class="approval-actions" method="post" action="{{ url_for('main.review_leave', request_id=item.id, action='reject-cancellation') }}"><button class="secondary-action">Keep approved leave</button></form>
+        {% else %}
+          <form class="approval-actions" method="post" action="{{ url_for('main.review_leave', request_id=item.id, action='approve') }}"><input name="comment" placeholder="Optional approval note"><button class="primary-action">Approve leave</button></form>
+          <form class="approval-actions" method="post" action="{{ url_for('main.review_leave', request_id=item.id, action='return') }}"><input name="comment" required placeholder="What needs clarification?"><button class="secondary-action">Request information</button></form>
+          <form class="approval-actions" method="post" action="{{ url_for('main.review_leave', request_id=item.id, action='reject') }}"><input name="comment" required placeholder="Reason for declining"><button class="danger-action">Decline</button></form>
+        {% endif %}
+      </article>
+    {% else %}
+      <div class="empty-state compact"><div class="empty-orb">✓</div><b>No leave decisions waiting</b><p>New requests assigned to you will appear here.</p></div>
+    {% endfor %}
+  </article>
+  {% if current_user.has_hr_access %}
+  <article class="panel">
+    <div class="panel-head"><div><span class="section-kicker">HR SERVICE DESK</span><h2>{{ request_items|length }} requests in motion</h2></div></div>
+    {% for item in request_items %}
+      <a class="list-row approval-request" href="{{ url_for('main.other_request_detail', request_id=item.id) }}"><div><b>{{ item.category }}</b><small>{{ item.user.employee_profile.full_name if item.user.employee_profile else item.user.username }} · {{ item.subject or 'Open request' }}</small></div><span class="status {{ item.status }}">{{ item.status|replace('_', ' ')|title }}</span><i>›</i></a>
+    {% else %}
+      <div class="empty-state compact"><div class="empty-orb">✓</div><b>No HR service requests waiting</b><p>Completed requests remain available in their employee history.</p></div>
+    {% endfor %}
+  </article>
+  {% endif %}
+</section>
+{% endblock %}
