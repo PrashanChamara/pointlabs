@@ -105,3 +105,14 @@ def send_birthday_email(to_address, employee_name, voucher_code=None):
         voucher_code=voucher_code,
         preheader=f"A birthday celebration from the Pointlabs team.",
     )
+
+
+def send_notice_email(to_address, subject, body, preheader=None):
+    """Use the shared branded layout for HR requests, documents and payslip notices."""
+    return send_email(
+        to_address,
+        subject,
+        body,
+        "emails/notice.html",
+        preheader=preheader or subject,
+    )

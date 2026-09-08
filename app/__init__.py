@@ -24,6 +24,14 @@ def create_app(config_name="development"):
     app.register_blueprint(auth_bp)
     app.register_blueprint(main_bp)
 
+    @app.before_request
+    def apply_effective_resignations():
+        # A runtime safeguard complements scheduled administration: historical data remains,
+        # but an employee cannot continue using the platform after their effective exit date.
+        from app.services.hr import deactivate_resigned_employees
+
+        deactivate_resigned_employees()
+
     @app.cli.command("init-db")
     def init_db():
         db.create_all()

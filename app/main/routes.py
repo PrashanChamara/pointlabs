@@ -2,21 +2,110 @@ from datetime import date, datetime, timedelta
 from io import BytesIO, StringIO
 from pathlib import Path
 import csv
+from decimal import Decimal, InvalidOperation
 
-from flask import current_app, flash, redirect, render_template, request, send_file, send_from_directory, url_for
+from flask import abort, current_app, flash, redirect, render_template, request, send_file, send_from_directory, url_for
 from flask_login import current_user, login_required
 from sqlalchemy import or_
 
 from app.extensions import db
 from app.main import bp
-from app.models.hr import DirectMessage, EmployeeDocument, LeaveBalance, LeaveRequest, LeaveType, Notification
-from app.models.organization import Department, Designation, Location
+from app.models.hr import (
+    CompensationRecord, DirectMessage, EmployeeDocument, LeaveBalance, LeaveRequest,
+    LeaveType, Notification, OtherRequest, OtherRequestActivity, OtherRequestAttachment,
+    Payslip, PublicHoliday,
+)
+from app.models.organization import Department, Designation, Entity, Location
 from app.models.user import EmployeeProfile, User
-from app.services.email import send_leave_status_email, send_message_email
+from app.services.email import send_leave_status_email, send_message_email, send_notice_email
+from app.services.files import store_uploaded_file
+from app.services.hr import (
+    apply_approved_leave_balance, deactivate_resigned_employees,
+    get_or_create_leave_balance, leave_days_for_profile, restore_cancelled_leave_balance,
+    would_create_reporting_cycle,
+)
 
 
 def admin_only():
-    return None if current_user.is_administrator else ("Forbidden", 403)
+    return None if current_user.has_hr_access else ("Forbidden", 403)
+
+
+def _parse_iso_date(field_name):
+    value = request.form.get(field_name, "").strip()
+    if not value:
+        return None
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        raise ValueError(f"{field_name.replace('_', ' ').title()} must be a valid date.")
+
+
+def _valid_work_email(email):
+    return not email or ("@" in email and email.rsplit("@", 1)[1].strip())
+
+
+def _active_managers(exclude_user_id=None):
+    query = EmployeeProfile.query.join(User).filter(User.is_active.is_(True))
+    if exclude_user_id:
+        query = query.filter(EmployeeProfile.user_id != exclude_user_id)
+    return query.order_by(EmployeeProfile.full_name).all()
+
+
+def _set_profile_from_form(profile):
+    """Apply the HR-only profile form after validating dates and reporting hierarchy."""
+    joining_date = _parse_iso_date("date_of_joining")
+    probation_end_date = _parse_iso_date("probation_end_date")
+    resignation_date = _parse_iso_date("resignation_date")
+    if joining_date and resignation_date and resignation_date < joining_date:
+        raise ValueError("Resignation date cannot be earlier than date of joining.")
+    manager_id = request.form.get("reporting_officer_id", type=int)
+    if manager_id and would_create_reporting_cycle(profile.user_id, manager_id):
+        raise ValueError("The selected reporting manager would create a reporting cycle.")
+
+    text_fields = (
+        "employee_code", "full_name", "preferred_name", "phone", "current_address",
+        "permanent_address", "home_country_contact_number", "personal_email", "employment_type",
+        "gender", "nationality", "marital_status", "national_identity_card_number",
+        "emirates_id_number", "passport_number", "emergency_contact_name",
+        "emergency_contact_number", "emergency_contact_relationship", "account_holder_name",
+        "bank_name", "branch_name", "bank_account_number", "swift_code", "ifsc_code",
+        "bank_address", "bank_currency",
+    )
+    for field in text_fields:
+        if field in request.form:
+            setattr(profile, field, request.form.get(field, "").strip() or None)
+    profile.address = profile.current_address  # Preserve compatibility with the original profile field.
+    profile.date_of_birth = _parse_iso_date("date_of_birth")
+    profile.date_of_joining = joining_date
+    profile.probation_end_date = probation_end_date
+    profile.resignation_date = resignation_date
+    profile.emirates_id_expiry_date = _parse_iso_date("emirates_id_expiry_date")
+    profile.passport_expiry_date = _parse_iso_date("passport_expiry_date")
+    profile.entity_id = request.form.get("entity_id", type=int)
+    profile.location_id = request.form.get("location_id", type=int)
+    profile.department_id = request.form.get("department_id", type=int)
+    profile.designation_id = request.form.get("designation_id", type=int)
+    profile.reporting_officer_id = manager_id
+    profile.employment_status = request.form.get("employment_status", "active")
+    if profile.resignation_date and profile.resignation_date <= date.today():
+        profile.employment_status = "resigned"
+        profile.user.is_active = False
+
+
+def _store_employee_documents(owner, files, category="Employee record"):
+    for file in files:
+        if not file or not file.filename:
+            continue
+        stored_path, mime_type, size = store_uploaded_file(file, f"employee-{owner.id}")
+        db.session.add(EmployeeDocument(
+            user_id=owner.id,
+            category=category,
+            filename=file.filename,
+            stored_path=stored_path,
+            mime_type=mime_type,
+            file_size=size,
+            uploaded_by_id=current_user.id,
+        ))
 
 
 def greeting_for_hour(hour):
@@ -60,15 +149,46 @@ def dashboard():
 @login_required
 def leave():
     if request.method == "POST":
-        start, end = date.fromisoformat(request.form["start_date"]), date.fromisoformat(request.form["end_date"])
+        try:
+            start, end = date.fromisoformat(request.form["start_date"]), date.fromisoformat(request.form["end_date"])
+        except (KeyError, ValueError):
+            flash("Choose valid leave dates.")
+            return redirect(url_for("main.leave"))
         if end < start:
             flash("End date must be on or after the start date.")
             return redirect(url_for("main.leave"))
-        db.session.add(LeaveRequest(user_id=current_user.id, leave_type_id=int(request.form["leave_type"]), start_date=start, end_date=end, days=(end - start).days + 1, reason=request.form.get("reason", "").strip() or None))
+        leave_type = db.session.get(LeaveType, request.form.get("leave_type", type=int))
+        profile = ensure_profile(current_user)
+        if leave_type is None or not leave_type.is_active:
+            flash("Choose an active leave type.")
+            return redirect(url_for("main.leave"))
+        if profile.resignation_date and date.today() <= profile.resignation_date:
+            flash("Leave cannot be requested during a notice period.")
+            return redirect(url_for("main.leave"))
+        if leave_type.code == "ANNUAL" and profile.probation_end_date and start < profile.probation_end_date:
+            flash("Annual leave is unavailable until the recorded probation end date.")
+            return redirect(url_for("main.leave"))
+        days = leave_days_for_profile(profile, start, end)
+        if days <= 0:
+            flash("The selected period contains no working days after weekends and public holidays.")
+            return redirect(url_for("main.leave"))
+        balance = get_or_create_leave_balance(current_user, leave_type, start.year)
+        if leave_type.code != "LWP" and balance.available_days < days:
+            lwp_type = LeaveType.query.filter_by(code="LWP", is_active=True).first()
+            if lwp_type:
+                leave_type = lwp_type
+                flash("The requested days exceed the available balance and were recorded as Leave Without Pay for review.")
+        item = LeaveRequest(user_id=current_user.id, leave_type_id=leave_type.id, start_date=start, end_date=end, days=days, reason=request.form.get("reason", "").strip() or None)
+        db.session.add(item)
+        manager = profile.reporting_officer
+        if manager and manager.is_active:
+            db.session.add(Notification(user_id=manager.id, message=f"{display_name(current_user)} submitted a {leave_type.name} request for review."))
         db.session.commit()
         flash("Leave request submitted for review.")
         return redirect(url_for("main.leave"))
-    return render_template("leave.html", requests=LeaveRequest.query.filter_by(user_id=current_user.id).order_by(LeaveRequest.created_at.desc()).all(), leave_types=LeaveType.query.filter_by(is_active=True).all())
+    balances = [get_or_create_leave_balance(current_user, leave_type) for leave_type in LeaveType.query.filter_by(is_active=True).all()]
+    db.session.commit()
+    return render_template("leave.html", requests=LeaveRequest.query.filter_by(user_id=current_user.id).order_by(LeaveRequest.created_at.desc()).all(), leave_types=LeaveType.query.filter_by(is_active=True).all(), balances=balances)
 
 
 @bp.post("/leave/<int:request_id>/<action>")
@@ -78,14 +198,32 @@ def review_leave(request_id, action):
     permitted = current_user.is_administrator or (item.user.employee_profile and item.user.employee_profile.reporting_officer_id == current_user.id)
     if not permitted:
         return "Forbidden", 403
+    if action == "approve-cancellation":
+        if item.status != "cancellation_requested":
+            return "Invalid leave cancellation state", 409
+        item.status, item.cancelled_at, item.cancellation_reviewer_id = "cancelled", datetime.utcnow(), current_user.id
+        restore_cancelled_leave_balance(item)
+        db.session.add(Notification(user_id=item.user_id, message=f"Your cancellation request for {item.leave_type.name} has been approved."))
+        db.session.commit()
+        flash("Leave cancellation approved and balance restored.")
+        return redirect(url_for("main.dashboard"))
+    if action == "reject-cancellation":
+        if item.status != "cancellation_requested":
+            return "Invalid leave cancellation state", 409
+        item.status, item.cancellation_reviewer_id = "approved", current_user.id
+        db.session.add(Notification(user_id=item.user_id, message=f"Your cancellation request for {item.leave_type.name} was declined."))
+        db.session.commit()
+        flash("Leave cancellation declined.")
+        return redirect(url_for("main.dashboard"))
+    if item.status not in {"submitted", "returned"}:
+        return "This leave request is no longer awaiting a decision", 409
     result = {"approve": "approved", "reject": "rejected", "return": "returned"}.get(action)
     if result is None:
         return "Unknown action", 400
     item.status, item.reviewer_comment = result, request.form.get("comment", "").strip() or None
+    item.approver_id = current_user.id
     if result == "approved":
-        balance = LeaveBalance.query.filter_by(user_id=item.user_id, leave_type_id=item.leave_type_id).first()
-        if balance:
-            balance.available_days -= item.days
+        apply_approved_leave_balance(item)
     employee_name = display_name(item.user)
     message = f"{employee_name}'s {item.leave_type.name} leave request was {result}."
     db.session.add(Notification(user_id=item.user_id, message=message))
@@ -96,28 +234,43 @@ def review_leave(request_id, action):
     return redirect(url_for("main.dashboard"))
 
 
-@bp.route("/admin/employees", methods=["GET", "POST"])
+@bp.post("/leave/<int:request_id>/cancel")
+@login_required
+def cancel_leave(request_id):
+    item = db.get_or_404(LeaveRequest, request_id)
+    if item.user_id != current_user.id:
+        return "Forbidden", 403
+    if item.status in {"submitted", "returned"}:
+        item.status, item.cancelled_at = "cancelled", datetime.utcnow()
+        db.session.commit()
+        flash("Pending leave request cancelled.")
+        return redirect(url_for("main.leave"))
+    if item.status != "approved":
+        return "This leave request cannot be cancelled", 409
+    item.status = "cancellation_requested"
+    item.cancellation_requested_at = datetime.utcnow()
+    item.cancellation_reason = request.form.get("reason", "").strip() or None
+    manager = item.user.employee_profile.reporting_officer if item.user.employee_profile else None
+    if manager and manager.is_active:
+        db.session.add(Notification(user_id=manager.id, message=f"{display_name(current_user)} requested cancellation of {item.leave_type.name}."))
+    db.session.commit()
+    flash("Cancellation request submitted to your reporting manager.")
+    return redirect(url_for("main.leave"))
+
+
+@bp.get("/admin/employees")
 @login_required
 def employees():
     denied = admin_only()
     if denied:
         return denied
-    if request.method == "POST":
-        username = request.form["username"].strip()
-        email = request.form.get("email", "").strip() or None
-        if User.query.filter_by(username=username).first() or (email and User.query.filter_by(email=email).first()):
-            flash("The user ID or email address is already in use.")
-            return redirect(url_for("main.employees"))
-        user = User(username=username, email=email, must_change_password=True)
-        user.set_password(request.form.get("password") or "ChangeMe123!")
-        db.session.add(user)
-        db.session.flush()
-        db.session.add(EmployeeProfile(user_id=user.id, employee_code=request.form.get("employee_code", "").strip() or None, full_name=request.form["full_name"].strip(), department_id=request.form.get("department_id", type=int), designation_id=request.form.get("designation_id", type=int), location_id=request.form.get("location_id", type=int)))
-        db.session.commit()
-        flash("Employee account created. They will change the temporary password on first sign-in.")
-        return redirect(url_for("main.employees"))
+    deactivate_resigned_employees()
     q = request.args.get("q", "").strip()
-    designation_id, department_id = request.args.get("designation_id", type=int), request.args.get("department_id", type=int)
+    designation_id = request.args.get("designation_id", type=int)
+    department_id = request.args.get("department_id", type=int)
+    location_id = request.args.get("location_id", type=int)
+    status = request.args.get("status", "active")
+    page = max(1, request.args.get("page", 1, type=int))
     query = EmployeeProfile.query.join(User, EmployeeProfile.user_id == User.id).order_by(EmployeeProfile.full_name)
     if q:
         query = query.filter(or_(EmployeeProfile.full_name.ilike(f"%{q}%"), EmployeeProfile.employee_code.ilike(f"%{q}%"), User.email.ilike(f"%{q}%")))
@@ -125,7 +278,138 @@ def employees():
         query = query.filter(EmployeeProfile.designation_id == designation_id)
     if department_id:
         query = query.filter(EmployeeProfile.department_id == department_id)
-    return render_template("employees.html", employees=query.all(), designations=Designation.query.order_by(Designation.name).all(), departments=Department.query.order_by(Department.name).all(), locations=Location.query.order_by(Location.name).all())
+    if location_id:
+        query = query.filter(EmployeeProfile.location_id == location_id)
+    if status == "active":
+        query = query.filter(User.is_active.is_(True))
+    elif status == "resigned":
+        query = query.filter(EmployeeProfile.employment_status == "resigned")
+    employees_page = query.paginate(page=page, per_page=10, error_out=False)
+    return render_template(
+        "employees.html",
+        employees=employees_page,
+        designations=Designation.query.order_by(Designation.name).all(),
+        departments=Department.query.order_by(Department.name).all(),
+        locations=Location.query.order_by(Location.name).all(),
+        selected_designation_id=designation_id,
+        selected_department_id=department_id,
+        selected_location_id=location_id,
+        selected_status=status,
+    )
+
+
+@bp.route("/admin/employees/new", methods=["GET", "POST"])
+@login_required
+def employee_new():
+    denied = admin_only()
+    if denied:
+        return denied
+    if request.method == "POST":
+        username = request.form.get("username", "").strip()
+        email = request.form.get("email", "").strip().lower() or None
+        if not username or not request.form.get("full_name", "").strip():
+            flash("Full name and user ID are required.")
+            return redirect(url_for("main.employee_new"))
+        if not _valid_work_email(email):
+            flash("Enter a valid work email address.")
+            return redirect(url_for("main.employee_new"))
+        if User.query.filter_by(username=username).first() or (email and User.query.filter_by(email=email).first()):
+            flash("The user ID or work email address is already in use.")
+            return redirect(url_for("main.employee_new"))
+        employee_code = request.form.get("employee_code", "").strip() or None
+        if employee_code and EmployeeProfile.query.filter_by(employee_code=employee_code).first():
+            flash("That employee code is already in use.")
+            return redirect(url_for("main.employee_new"))
+        role = request.form.get("role", "employee")
+        if role not in {"employee", "manager", "hr"} or (role == "hr" and not current_user.is_administrator):
+            role = "employee"
+        user = User(username=username, email=email, role=role, must_change_password=True)
+        user.set_password(request.form.get("password") or "ChangeMe123!")
+        db.session.add(user)
+        db.session.flush()
+        profile = EmployeeProfile(user_id=user.id, full_name=request.form["full_name"].strip(), employee_code=employee_code)
+        db.session.add(profile)
+        try:
+            _set_profile_from_form(profile)
+            _store_employee_documents(user, request.files.getlist("documents"), request.form.get("document_category", "Employee record"))
+            db.session.commit()
+        except ValueError as error:
+            db.session.rollback()
+            flash(str(error))
+            return redirect(url_for("main.employee_new"))
+        flash("Employee account created. The employee must change their temporary password at first sign-in.")
+        return redirect(url_for("main.employee_detail", user_id=user.id))
+    return render_template("employee_form.html", employee=None, profile=None, **_employee_form_options())
+
+
+def _employee_form_options(user_id=None):
+    return {
+        "designations": Designation.query.filter_by(is_active=True).order_by(Designation.name).all(),
+        "departments": Department.query.filter_by(is_active=True).order_by(Department.name).all(),
+        "locations": Location.query.filter_by(is_active=True).order_by(Location.name).all(),
+        "entities": Entity.query.filter_by(is_active=True).order_by(Entity.name).all(),
+        "managers": _active_managers(exclude_user_id=user_id),
+    }
+
+
+@bp.get("/admin/employees/<int:user_id>")
+@login_required
+def employee_detail(user_id):
+    denied = admin_only()
+    if denied:
+        return denied
+    employee = db.get_or_404(User, user_id)
+    profile = ensure_profile(employee)
+    return render_template("employee_detail.html", employee=employee, profile=profile, documents=EmployeeDocument.query.filter_by(user_id=user_id).order_by(EmployeeDocument.uploaded_at.desc()).all())
+
+
+@bp.route("/admin/employees/<int:user_id>/edit", methods=["GET", "POST"])
+@login_required
+def employee_edit(user_id):
+    denied = admin_only()
+    if denied:
+        return denied
+    employee = db.get_or_404(User, user_id)
+    profile = ensure_profile(employee)
+    if request.method == "POST":
+        email = request.form.get("email", "").strip().lower() or None
+        conflicting = User.query.filter(User.email == email, User.id != employee.id).first() if email else None
+        if conflicting or not _valid_work_email(email):
+            flash("Enter a unique, valid work email address.")
+            return redirect(url_for("main.employee_edit", user_id=user_id))
+        employee.email = email
+        role = request.form.get("role", employee.role)
+        if role in {"employee", "manager", "hr"} and (role != "hr" or current_user.is_administrator):
+            employee.role = role
+        try:
+            _set_profile_from_form(profile)
+            _store_employee_documents(employee, request.files.getlist("documents"), request.form.get("document_category", "Employee record"))
+            db.session.commit()
+        except ValueError as error:
+            db.session.rollback()
+            flash(str(error))
+            return redirect(url_for("main.employee_edit", user_id=user_id))
+        flash("Employee record updated.")
+        return redirect(url_for("main.employee_detail", user_id=user_id))
+    return render_template("employee_form.html", employee=employee, profile=profile, **_employee_form_options(user_id=user_id))
+
+
+@bp.post("/admin/employees/<int:user_id>/archive")
+@login_required
+def employee_archive(user_id):
+    denied = admin_only()
+    if denied:
+        return denied
+    if user_id == current_user.id:
+        flash("You cannot archive your own account.")
+        return redirect(url_for("main.employee_detail", user_id=user_id))
+    employee = db.get_or_404(User, user_id)
+    profile = ensure_profile(employee)
+    employee.is_active = False
+    profile.employment_status = "inactive"
+    db.session.commit()
+    flash("Employee access has been archived. Historical records remain available to HR.")
+    return redirect(url_for("main.employees", status="all"))
 
 
 @bp.get("/admin/employees/export.csv")
@@ -158,39 +442,41 @@ def profile():
 @login_required
 def documents():
     if request.method == "POST":
-        owner_id = request.form.get("employee_user_id", type=int) if current_user.is_administrator else current_user.id
+        owner_id = request.form.get("employee_user_id", type=int) if current_user.has_hr_access else current_user.id
         owner = db.session.get(User, owner_id) if owner_id else None
-        if owner is None or (not current_user.is_administrator and owner.id != current_user.id):
+        if owner is None or (not current_user.has_hr_access and owner.id != current_user.id):
             return "Employee selection is invalid", 400
         file = request.files.get("file")
         if not file or not file.filename:
             flash("Choose a document to upload.")
             return redirect(url_for("main.documents"))
-        suffix = Path(file.filename).suffix.lower()
-        if suffix not in {".pdf", ".png", ".jpg", ".jpeg", ".webp"}:
-            flash("Only PDF and image documents are allowed.")
+        try:
+            safe, mime_type, size = store_uploaded_file(file, f"employee-{owner.id}")
+        except ValueError as error:
+            flash(str(error))
             return redirect(url_for("main.documents"))
-        folder = Path(current_app.instance_path) / "uploads"; folder.mkdir(parents=True, exist_ok=True)
-        safe = f"{owner.id}_{int(datetime.now().timestamp())}{suffix}"
-        if suffix != ".pdf":
-            from PIL import Image
-            safe = Path(safe).with_suffix(".webp").name
-            image = Image.open(file.stream).convert("RGB"); image.thumbnail((2000, 2000)); image.save(folder / safe, "WEBP", quality=82, method=6)
-        else:
-            file.save(folder / safe)
-        db.session.add(EmployeeDocument(user_id=owner.id, category=request.form.get("category", "Other").strip() or "Other", filename=file.filename, stored_path=safe))
+        db.session.add(EmployeeDocument(
+            user_id=owner.id,
+            category=request.form.get("category", "Other").strip() or "Other",
+            filename=file.filename,
+            stored_path=safe,
+            mime_type=mime_type,
+            file_size=size,
+            is_employee_visible=bool(request.form.get("is_employee_visible")),
+            uploaded_by_id=current_user.id,
+        ))
         db.session.commit()
         flash(f"Document uploaded to {display_name(owner)}’s profile.")
         return redirect(url_for("main.documents"))
-    docs = EmployeeDocument.query.order_by(EmployeeDocument.uploaded_at.desc()) if current_user.is_administrator else EmployeeDocument.query.filter_by(user_id=current_user.id).order_by(EmployeeDocument.uploaded_at.desc())
-    return render_template("documents.html", documents=docs.all(), employees=EmployeeProfile.query.order_by(EmployeeProfile.full_name).all() if current_user.is_administrator else [])
+    docs = EmployeeDocument.query.order_by(EmployeeDocument.uploaded_at.desc()) if current_user.has_hr_access else EmployeeDocument.query.filter_by(user_id=current_user.id, is_employee_visible=True).order_by(EmployeeDocument.uploaded_at.desc())
+    return render_template("documents.html", documents=docs.all(), employees=EmployeeProfile.query.order_by(EmployeeProfile.full_name).all() if current_user.has_hr_access else [])
 
 
 @bp.get("/documents/<int:document_id>/download")
 @login_required
 def download_document(document_id):
     document = db.get_or_404(EmployeeDocument, document_id)
-    if not (current_user.is_administrator or document.user_id == current_user.id):
+    if not (current_user.has_hr_access or (document.user_id == current_user.id and document.is_employee_visible)):
         return "Forbidden", 403
     return send_from_directory(Path(current_app.instance_path) / "uploads", document.stored_path, as_attachment=True, download_name=document.filename)
 
@@ -230,8 +516,14 @@ def reports():
     denied = admin_only()
     if denied:
         return denied
-    leaves = LeaveRequest.query.order_by(LeaveRequest.created_at.desc()).all()
-    return render_template("reports.html", employees=EmployeeProfile.query.count(), pending=LeaveRequest.query.filter_by(status="submitted").count(), approved=LeaveRequest.query.filter_by(status="approved").count(), leaves=leaves[:8])
+    try:
+        from_date = date.fromisoformat(request.args.get("from_date")) if request.args.get("from_date") else date.today().replace(month=1, day=1)
+        to_date = date.fromisoformat(request.args.get("to_date")) if request.args.get("to_date") else date.today()
+    except ValueError:
+        from_date, to_date = date.today().replace(month=1, day=1), date.today()
+    leaves = LeaveRequest.query.filter(LeaveRequest.start_date <= to_date, LeaveRequest.end_date >= from_date).order_by(LeaveRequest.created_at.desc()).all()
+    annual_sick = LeaveBalance.query.join(LeaveType).filter(LeaveBalance.calendar_year == from_date.year, LeaveType.code.in_(["ANNUAL", "SICK"])).all()
+    return render_template("reports.html", employees=EmployeeProfile.query.filter(EmployeeProfile.employment_status == "active").count(), pending=LeaveRequest.query.filter(LeaveRequest.status.in_(["submitted", "cancellation_requested"])).count(), approved=LeaveRequest.query.filter_by(status="approved").count(), leaves=leaves[:8], balances=annual_sick, from_date=from_date, to_date=to_date)
 
 
 @bp.get("/reports/leave.csv")
@@ -243,6 +535,34 @@ def leave_report():
     for item in LeaveRequest.query.order_by(LeaveRequest.created_at.desc()).all():
         writer.writerow([display_name(item.user), item.leave_type.name, item.start_date, item.end_date, item.days, item.status])
     return send_file(BytesIO(stream.getvalue().encode()), mimetype="text/csv", as_attachment=True, download_name="pointlabs-leave-report.csv")
+
+
+@bp.get("/reports/leave-summary.csv")
+@login_required
+def leave_summary_report():
+    denied = admin_only()
+    if denied:
+        return denied
+    year = request.args.get("year", date.today().year, type=int)
+    stream = StringIO(); writer = csv.writer(stream)
+    writer.writerow(["Employee", "Employee Code", "Department", "Location", "Leave Type", "Entitled", "Accrued", "Utilized", "Balance"])
+    for balance in LeaveBalance.query.join(LeaveType).filter(LeaveBalance.calendar_year == year, LeaveType.code.in_(["ANNUAL", "SICK"])).order_by(LeaveBalance.user_id).all():
+        profile = ensure_profile(balance.user)
+        writer.writerow([profile.full_name, profile.employee_code or "", profile.department.name if profile.department else "", profile.location.name if profile.location else "", balance.leave_type.name, balance.entitled_days, balance.accrued_days, balance.utilized_days, balance.available_days])
+    return send_file(BytesIO(stream.getvalue().encode()), mimetype="text/csv", as_attachment=True, download_name=f"pointlabs-leave-summary-{year}.csv")
+
+
+@bp.get("/reports/employees.csv")
+@login_required
+def full_employee_report():
+    denied = admin_only()
+    if denied:
+        return denied
+    stream = StringIO(); writer = csv.writer(stream)
+    writer.writerow(["Employee Code", "Full Name", "Preferred Name", "Work Email", "Entity", "Location", "Department", "Designation", "Manager", "Date Joined", "Status"])
+    for profile in EmployeeProfile.query.order_by(EmployeeProfile.full_name).all():
+        writer.writerow([profile.employee_code or "", profile.full_name, profile.preferred_name or "", profile.user.email or "", profile.entity.name if profile.entity else "", profile.location.name if profile.location else "", profile.department.name if profile.department else "", profile.designation.name if profile.designation else "", profile.reporting_officer.employee_profile.full_name if profile.reporting_officer and profile.reporting_officer.employee_profile else "", profile.date_of_joining or "", profile.employment_status])
+    return send_file(BytesIO(stream.getvalue().encode()), mimetype="text/csv", as_attachment=True, download_name="pointlabs-full-employee-detail.csv")
 
 
 @bp.get("/admin")
@@ -287,3 +607,244 @@ def birthdays():
     until = date.today() + timedelta(days=3)
     people = [profile for profile in EmployeeProfile.query.all() if profile.date_of_birth and date.today() <= profile.date_of_birth.replace(year=date.today().year) <= until]
     return render_template("birthdays.html", people=people)
+
+
+REQUEST_CATEGORIES = (
+    "Salary Certificate", "Employment / Experience Certificate", "Employment Verification Letter",
+    "NOC Request", "Salary Transfer Letter", "Personal Information Update",
+    "Employee Document Copy Request", "Visa Application Support Letter", "Other HR Request",
+)
+
+
+def _request_access(item):
+    return current_user.has_hr_access or item.user_id == current_user.id
+
+
+@bp.route("/requests", methods=["GET", "POST"])
+@login_required
+def other_requests():
+    if request.method == "POST":
+        category = request.form.get("category", "")
+        details = request.form.get("details", "").strip()
+        if category not in REQUEST_CATEGORIES or not details:
+            flash("Choose a request category and describe what you need.")
+            return redirect(url_for("main.other_requests"))
+        item = OtherRequest(user_id=current_user.id, category=category, subject=request.form.get("subject", "").strip() or None, details=details)
+        db.session.add(item)
+        db.session.flush()
+        db.session.add(OtherRequestActivity(other_request_id=item.id, actor_id=current_user.id, activity_type="submitted", message="Request submitted."))
+        for administrator in User.query.filter((User.is_administrator.is_(True)) | (User.role == "hr"), User.is_active.is_(True)).all():
+            db.session.add(Notification(user_id=administrator.id, message=f"New {category} request from {display_name(current_user)}."))
+        db.session.commit()
+        flash("Your request has been submitted to HR.")
+        return redirect(url_for("main.other_request_detail", request_id=item.id))
+    query = OtherRequest.query.order_by(OtherRequest.updated_at.desc())
+    if not current_user.has_hr_access:
+        query = query.filter_by(user_id=current_user.id)
+    status = request.args.get("status", "").strip()
+    if status:
+        query = query.filter_by(status=status)
+    return render_template("other_requests.html", requests=query.paginate(page=max(1, request.args.get("page", 1, type=int)), per_page=10, error_out=False), categories=REQUEST_CATEGORIES, selected_status=status)
+
+
+@bp.route("/requests/<int:request_id>", methods=["GET", "POST"])
+@login_required
+def other_request_detail(request_id):
+    item = db.get_or_404(OtherRequest, request_id)
+    if not _request_access(item):
+        return "Forbidden", 403
+    if request.method == "POST":
+        action = request.form.get("action")
+        message = request.form.get("message", "").strip()
+        employee_editable = item.status in {"draft", "submitted", "more_information_required", "resubmitted"}
+        if action == "edit" and item.user_id == current_user.id and employee_editable:
+            details = request.form.get("details", "").strip()
+            if details:
+                item.subject, item.details, item.status = request.form.get("subject", "").strip() or None, details, "resubmitted" if item.status == "more_information_required" else item.status
+                db.session.add(OtherRequestActivity(other_request_id=item.id, actor_id=current_user.id, activity_type="employee_updated", message="Employee updated request details."))
+        elif action == "cancel" and item.user_id == current_user.id and item.status not in {"completed", "cancelled", "rejected"}:
+            item.status, item.cancelled_at = "cancelled", datetime.utcnow()
+            db.session.add(OtherRequestActivity(other_request_id=item.id, actor_id=current_user.id, activity_type="cancelled", message="Employee cancelled this request."))
+        elif current_user.has_hr_access and action in {"in_review", "more_information_required", "in_progress", "completed", "rejected"}:
+            item.status = action
+            db.session.add(OtherRequestActivity(other_request_id=item.id, actor_id=current_user.id, activity_type=action, message=message or action.replace("_", " ").title()))
+            db.session.add(Notification(user_id=item.user_id, message="Your request has been updated." if action != "completed" else "Your HR request has been completed."))
+            if item.user.email:
+                send_notice_email(item.user.email, "Pointlabs One · Request update", "Your request has been updated." if action != "completed" else "Your HR request has been completed. Visit Pointlabs One to view the details.")
+        elif action == "comment" and message:
+            internal = bool(request.form.get("internal")) and current_user.has_hr_access
+            db.session.add(OtherRequestActivity(other_request_id=item.id, actor_id=current_user.id, activity_type="comment", message=message, is_internal=internal))
+            if current_user.has_hr_access and not internal:
+                db.session.add(Notification(user_id=item.user_id, message="HR added an update to your request."))
+        else:
+            return "Invalid request action", 409
+        db.session.commit()
+        flash("Request updated.")
+        return redirect(url_for("main.other_request_detail", request_id=item.id))
+    activities = [activity for activity in item.activities if current_user.has_hr_access or not activity.is_internal]
+    return render_template("other_request_detail.html", item=item, activities=activities)
+
+
+@bp.route("/admin/master-data/<string:kind>", methods=["GET", "POST"])
+@login_required
+def master_data(kind):
+    denied = admin_only()
+    if denied:
+        return denied
+    models = {"departments": Department, "locations": Location, "entities": Entity}
+    model = models.get(kind)
+    if model is None:
+        abort(404)
+    if request.method == "POST":
+        name = request.form.get("name", "").strip()
+        if not name or model.query.filter_by(name=name).first():
+            flash("Enter a unique name.")
+        else:
+            item = model(name=name)
+            if model is Location:
+                item.entity_id = request.form.get("entity_id", type=int)
+                item.country_code = request.form.get("country_code", "").strip().upper() or None
+            if model is Entity:
+                item.legal_name = request.form.get("legal_name", "").strip() or None
+                item.country_code = request.form.get("country_code", "").strip().upper() or None
+                item.currency = request.form.get("currency", "").strip().upper() or None
+            db.session.add(item); db.session.commit(); flash("Master record added.")
+        return redirect(url_for("main.master_data", kind=kind))
+    return render_template("master_data.html", kind=kind, records=model.query.order_by(model.name).all(), entities=Entity.query.filter_by(is_active=True).order_by(Entity.name).all())
+
+
+@bp.route("/admin/public-holidays", methods=["GET", "POST"])
+@login_required
+def public_holidays():
+    denied = admin_only()
+    if denied:
+        return denied
+    if request.method == "POST":
+        try:
+            holiday_date = date.fromisoformat(request.form["holiday_date"])
+        except (KeyError, ValueError):
+            flash("Choose a valid public holiday date.")
+            return redirect(url_for("main.public_holidays"))
+        db.session.add(PublicHoliday(name=request.form.get("name", "").strip(), holiday_date=holiday_date, location_id=request.form.get("location_id", type=int), entity_id=request.form.get("entity_id", type=int)))
+        db.session.commit(); flash("Public holiday added.")
+        return redirect(url_for("main.public_holidays"))
+    return render_template("public_holidays.html", holidays=PublicHoliday.query.order_by(PublicHoliday.holiday_date).all(), locations=Location.query.filter_by(is_active=True).all(), entities=Entity.query.filter_by(is_active=True).all())
+
+
+def _money(value):
+    try:
+        amount = Decimal(request.form.get(value, "0") or "0")
+    except InvalidOperation:
+        raise ValueError(f"{value.replace('_', ' ').title()} must be a valid amount.")
+    if amount < 0:
+        raise ValueError("Salary values cannot be negative.")
+    return amount.quantize(Decimal("0.01"))
+
+
+def _current_compensation(user, effective_date=None):
+    query = CompensationRecord.query.filter_by(user_id=user.id)
+    if effective_date:
+        query = query.filter(CompensationRecord.effective_date <= effective_date)
+    return query.order_by(CompensationRecord.effective_date.desc(), CompensationRecord.id.desc()).first()
+
+
+@bp.get("/admin/payroll")
+@login_required
+def payroll():
+    denied = admin_only()
+    if denied:
+        return denied
+    year = request.args.get("year", date.today().year, type=int)
+    month = request.args.get("month", date.today().month, type=int)
+    if month not in range(1, 13):
+        month = date.today().month
+    profiles = EmployeeProfile.query.join(User).filter(User.is_active.is_(True)).order_by(EmployeeProfile.full_name).all()
+    payslips = Payslip.query.filter_by(payroll_year=year, payroll_month=month).order_by(Payslip.generated_at.desc()).all()
+    return render_template("payroll.html", profiles=profiles, payslips=payslips, year=year, month=month, month_name=date(year, month, 1).strftime("%B"), date=date)
+
+
+@bp.post("/admin/payroll/compensation/<int:user_id>")
+@login_required
+def save_compensation(user_id):
+    denied = admin_only()
+    if denied:
+        return denied
+    user = db.get_or_404(User, user_id)
+    try:
+        effective_date = date.fromisoformat(request.form.get("effective_date") or date.today().isoformat())
+        record = CompensationRecord(
+            user_id=user.id,
+            effective_date=effective_date,
+            currency=request.form.get("currency", "LKR").upper(),
+            basic_salary=_money("basic_salary"), allowances=_money("allowances"), other_earnings=_money("other_earnings"),
+            wht=_money("wht"), epf=_money("epf"), etf=_money("etf"), paye=_money("paye"), other_deductions=_money("other_deductions"),
+            created_by_id=current_user.id,
+        )
+    except ValueError as error:
+        flash(str(error)); return redirect(url_for("main.payroll"))
+    db.session.add(record); db.session.commit()
+    flash("Compensation revision saved with an effective date.")
+    return redirect(url_for("main.payroll"))
+
+
+@bp.post("/admin/payroll/generate/<int:user_id>")
+@login_required
+def generate_payslip(user_id):
+    denied = admin_only()
+    if denied:
+        return denied
+    user = db.get_or_404(User, user_id)
+    year, month = request.form.get("year", type=int), request.form.get("month", type=int)
+    if not year or month not in range(1, 13):
+        return "Invalid payroll period", 400
+    record = _current_compensation(user, date(year, month, 1))
+    if record is None:
+        flash("Add a compensation revision before generating a payslip.")
+        return redirect(url_for("main.payroll", year=year, month=month))
+    existing = Payslip.query.filter_by(user_id=user.id, payroll_year=year, payroll_month=month).order_by(Payslip.version.desc()).first()
+    version = existing.version + 1 if existing else 1
+    profile = ensure_profile(user)
+    country = "AE" if (profile.location and profile.location.country_code == "AE") or (profile.entity and profile.entity.country_code == "AE") else "LK"
+    payslip = Payslip(
+        user_id=user.id, compensation_record_id=record.id, payroll_year=year, payroll_month=month, version=version,
+        template_country=country, currency=record.currency, basic_salary=record.basic_salary, allowances=record.allowances,
+        other_earnings=record.other_earnings, wht=record.wht, epf=record.epf, etf=record.etf, paye=record.paye,
+        other_deductions=record.other_deductions, gross_salary=record.gross_salary, total_deductions=record.total_deductions,
+        net_salary=record.net_salary, status="generated", generated_by_id=current_user.id,
+    )
+    db.session.add(payslip); db.session.add(Notification(user_id=user.id, message=f"Your {date(year, month, 1).strftime('%B %Y')} payslip is available.")); db.session.commit()
+    flash("Payslip generated. A new version preserves prior payroll history.")
+    return redirect(url_for("main.payslip_detail", payslip_id=payslip.id))
+
+
+@bp.get("/payslips")
+@login_required
+def payslips():
+    query = Payslip.query.order_by(Payslip.payroll_year.desc(), Payslip.payroll_month.desc(), Payslip.version.desc())
+    if not current_user.has_hr_access:
+        query = query.filter_by(user_id=current_user.id)
+    return render_template("payslips.html", payslips=query.all())
+
+
+@bp.get("/payslips/<int:payslip_id>")
+@login_required
+def payslip_detail(payslip_id):
+    payslip = db.get_or_404(Payslip, payslip_id)
+    if not (current_user.has_hr_access or payslip.user_id == current_user.id):
+        return "Forbidden", 403
+    return render_template("payslip.html", payslip=payslip, profile=ensure_profile(payslip.user), period=date(payslip.payroll_year, payslip.payroll_month, 1))
+
+
+@bp.post("/admin/payslips/<int:payslip_id>/email")
+@login_required
+def email_payslip(payslip_id):
+    denied = admin_only()
+    if denied:
+        return denied
+    payslip = db.get_or_404(Payslip, payslip_id)
+    if payslip.user.email:
+        send_notice_email(payslip.user.email, "Pointlabs One · Payslip available", "Your payslip is now available securely in Pointlabs One.")
+        payslip.emailed_at = datetime.utcnow(); db.session.commit(); flash("Payslip availability email sent.")
+    else:
+        flash("This employee has no work email address.")
+    return redirect(url_for("main.payslip_detail", payslip_id=payslip.id))

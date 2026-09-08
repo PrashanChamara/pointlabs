@@ -10,11 +10,16 @@ class NamedRecord(db.Model):
 
 
 class Entity(NamedRecord):
-    pass
+    legal_name = db.Column(db.String(180), nullable=True)
+    country_code = db.Column(db.String(2), nullable=True)
+    currency = db.Column(db.String(3), nullable=True)
+    address = db.Column(db.Text, nullable=True)
 
 
 class Location(NamedRecord):
     entity_id = db.Column(db.Integer, db.ForeignKey("entity.id"), nullable=True)
+    country_code = db.Column(db.String(2), nullable=True)
+    entity = db.relationship("Entity")
 
 
 class Department(NamedRecord):

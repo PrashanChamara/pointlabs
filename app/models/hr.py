@@ -6,6 +6,9 @@ class LeaveType(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(80), unique=True, nullable=False)
     default_days = db.Column(db.Float, nullable=False, default=0)
+    code = db.Column(db.String(30), nullable=True, unique=True)
+    accrual_method = db.Column(db.String(30), nullable=False, default="annual")
+    requires_manager_approval = db.Column(db.Boolean, nullable=False, default=True)
     is_active = db.Column(db.Boolean, nullable=False, default=True)
 
 
@@ -14,8 +17,17 @@ class LeaveBalance(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
     leave_type_id = db.Column(db.Integer, db.ForeignKey("leave_type.id"), nullable=False)
     available_days = db.Column(db.Float, nullable=False, default=0)
+    calendar_year = db.Column(db.Integer, nullable=False, default=lambda: datetime.utcnow().year)
+    entitled_days = db.Column(db.Float, nullable=False, default=0)
+    accrued_days = db.Column(db.Float, nullable=False, default=0)
+    utilized_days = db.Column(db.Float, nullable=False, default=0)
+    carry_forward_days = db.Column(db.Float, nullable=False, default=0)
+    adjustment_days = db.Column(db.Float, nullable=False, default=0)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
     user = db.relationship("User")
     leave_type = db.relationship("LeaveType")
+
+    __table_args__ = (db.UniqueConstraint("user_id", "leave_type_id", "calendar_year", name="uq_leave_balance_user_type_year"),)
 
 
 class LeaveRequest(db.Model):
@@ -28,10 +40,18 @@ class LeaveRequest(db.Model):
     reason = db.Column(db.Text, nullable=True)
     status = db.Column(db.String(30), nullable=False, default="submitted")
     reviewer_comment = db.Column(db.Text, nullable=True)
+    approver_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+    balance_applied = db.Column(db.Boolean, nullable=False, default=False)
+    cancellation_requested_at = db.Column(db.DateTime, nullable=True)
+    cancellation_reason = db.Column(db.Text, nullable=True)
+    cancellation_reviewer_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+    cancelled_at = db.Column(db.DateTime, nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
     user = db.relationship("User", foreign_keys=[user_id])
     leave_type = db.relationship("LeaveType")
+    approver = db.relationship("User", foreign_keys=[approver_id])
+    cancellation_reviewer = db.relationship("User", foreign_keys=[cancellation_reviewer_id])
 
 
 class EmployeeDocument(db.Model):
@@ -40,8 +60,150 @@ class EmployeeDocument(db.Model):
     category = db.Column(db.String(80), nullable=False)
     filename = db.Column(db.String(255), nullable=False)
     stored_path = db.Column(db.String(255), nullable=False)
+    mime_type = db.Column(db.String(120), nullable=True)
+    file_size = db.Column(db.Integer, nullable=True)
+    is_employee_visible = db.Column(db.Boolean, nullable=False, default=True)
+    uploaded_by_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
     uploaded_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
     user = db.relationship("User", foreign_keys=[user_id])
+
+
+class PublicHoliday(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(160), nullable=False)
+    holiday_date = db.Column(db.Date, nullable=False, index=True)
+    location_id = db.Column(db.Integer, db.ForeignKey("location.id"), nullable=True, index=True)
+    entity_id = db.Column(db.Integer, db.ForeignKey("entity.id"), nullable=True, index=True)
+    is_active = db.Column(db.Boolean, nullable=False, default=True)
+    location = db.relationship("Location")
+    entity = db.relationship("Entity")
+
+    __table_args__ = (db.UniqueConstraint("holiday_date", "location_id", "entity_id", "name", name="uq_public_holiday_scope"),)
+
+
+class LeaveBalanceAdjustment(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    leave_balance_id = db.Column(db.Integer, db.ForeignKey("leave_balance.id"), nullable=False, index=True)
+    changed_by_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+    days = db.Column(db.Float, nullable=False)
+    reason = db.Column(db.String(500), nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    balance = db.relationship("LeaveBalance", backref="adjustments")
+    changed_by = db.relationship("User", foreign_keys=[changed_by_id])
+
+
+class CompensationRecord(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
+    effective_date = db.Column(db.Date, nullable=False, index=True)
+    currency = db.Column(db.String(3), nullable=False, default="LKR")
+    basic_salary = db.Column(db.Numeric(14, 2), nullable=False, default=0)
+    allowances = db.Column(db.Numeric(14, 2), nullable=False, default=0)
+    other_earnings = db.Column(db.Numeric(14, 2), nullable=False, default=0)
+    wht = db.Column(db.Numeric(14, 2), nullable=False, default=0)
+    epf = db.Column(db.Numeric(14, 2), nullable=False, default=0)
+    etf = db.Column(db.Numeric(14, 2), nullable=False, default=0)
+    paye = db.Column(db.Numeric(14, 2), nullable=False, default=0)
+    other_deductions = db.Column(db.Numeric(14, 2), nullable=False, default=0)
+    created_by_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    user = db.relationship("User", foreign_keys=[user_id], backref="compensation_records")
+    created_by = db.relationship("User", foreign_keys=[created_by_id])
+
+    @property
+    def gross_salary(self):
+        return self.basic_salary + self.allowances + self.other_earnings
+
+    @property
+    def total_deductions(self):
+        return self.wht + self.epf + self.etf + self.paye + self.other_deductions
+
+    @property
+    def net_salary(self):
+        return self.gross_salary - self.total_deductions
+
+
+class Payslip(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
+    compensation_record_id = db.Column(db.Integer, db.ForeignKey("compensation_record.id"), nullable=True)
+    payroll_year = db.Column(db.Integer, nullable=False, index=True)
+    payroll_month = db.Column(db.Integer, nullable=False, index=True)
+    version = db.Column(db.Integer, nullable=False, default=1)
+    template_country = db.Column(db.String(2), nullable=False, default="LK")
+    currency = db.Column(db.String(3), nullable=False)
+    basic_salary = db.Column(db.Numeric(14, 2), nullable=False, default=0)
+    allowances = db.Column(db.Numeric(14, 2), nullable=False, default=0)
+    other_earnings = db.Column(db.Numeric(14, 2), nullable=False, default=0)
+    wht = db.Column(db.Numeric(14, 2), nullable=False, default=0)
+    epf = db.Column(db.Numeric(14, 2), nullable=False, default=0)
+    etf = db.Column(db.Numeric(14, 2), nullable=False, default=0)
+    paye = db.Column(db.Numeric(14, 2), nullable=False, default=0)
+    other_deductions = db.Column(db.Numeric(14, 2), nullable=False, default=0)
+    gross_salary = db.Column(db.Numeric(14, 2), nullable=False, default=0)
+    total_deductions = db.Column(db.Numeric(14, 2), nullable=False, default=0)
+    net_salary = db.Column(db.Numeric(14, 2), nullable=False, default=0)
+    status = db.Column(db.String(30), nullable=False, default="draft")
+    generated_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    generated_by_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+    emailed_at = db.Column(db.DateTime, nullable=True)
+    user = db.relationship("User", foreign_keys=[user_id], backref="payslips")
+    compensation_record = db.relationship("CompensationRecord")
+    generated_by = db.relationship("User", foreign_keys=[generated_by_id])
+
+    __table_args__ = (db.UniqueConstraint("user_id", "payroll_year", "payroll_month", "version", name="uq_payslip_user_period_version"),)
+
+
+class OtherRequest(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
+    category = db.Column(db.String(80), nullable=False, index=True)
+    subject = db.Column(db.String(180), nullable=True)
+    details = db.Column(db.Text, nullable=False)
+    status = db.Column(db.String(40), nullable=False, default="submitted", index=True)
+    assigned_to_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+    completed_document_id = db.Column(db.Integer, db.ForeignKey("employee_document.id"), nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False, index=True)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    cancelled_at = db.Column(db.DateTime, nullable=True)
+    user = db.relationship("User", foreign_keys=[user_id], backref="other_requests")
+    assigned_to = db.relationship("User", foreign_keys=[assigned_to_id])
+    completed_document = db.relationship("EmployeeDocument", foreign_keys=[completed_document_id])
+
+
+class OtherRequestActivity(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    other_request_id = db.Column(db.Integer, db.ForeignKey("other_request.id"), nullable=False, index=True)
+    actor_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+    activity_type = db.Column(db.String(50), nullable=False)
+    message = db.Column(db.Text, nullable=True)
+    is_internal = db.Column(db.Boolean, nullable=False, default=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    request = db.relationship("OtherRequest", backref="activities")
+    actor = db.relationship("User")
+
+
+class OtherRequestAttachment(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    other_request_id = db.Column(db.Integer, db.ForeignKey("other_request.id"), nullable=False, index=True)
+    filename = db.Column(db.String(255), nullable=False)
+    stored_path = db.Column(db.String(255), nullable=False)
+    mime_type = db.Column(db.String(120), nullable=True)
+    uploaded_by_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    request = db.relationship("OtherRequest", backref="attachments")
+    uploaded_by = db.relationship("User")
+
+
+class AuditEvent(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    actor_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True, index=True)
+    entity_type = db.Column(db.String(80), nullable=False, index=True)
+    entity_id = db.Column(db.Integer, nullable=False, index=True)
+    action = db.Column(db.String(80), nullable=False)
+    summary = db.Column(db.String(500), nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False, index=True)
+    actor = db.relationship("User")
 
 
 class Notification(db.Model):

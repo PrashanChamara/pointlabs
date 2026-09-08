@@ -17,7 +17,7 @@ def login_form():
 def login():
     username = request.form.get("username", "").strip()
     user = User.query.filter_by(username=username).first()
-    if user is None or not user.check_password(request.form.get("password", "")):
+    if user is None or not user.is_active or not user.check_password(request.form.get("password", "")):
         return (
             render_template(
                 "login.html",

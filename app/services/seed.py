@@ -25,6 +25,19 @@ def seed_reference_data(password):
                 full_name="Pointlabs Administrator",
             )
         )
-    for name in ["Annual Leave", "Sick Leave", "Paternity Leave", "Maternity Leave", "Compassionate Leave", "Off in Lieu", "WFH"]:
-        if not LeaveType.query.filter_by(name=name).first(): db.session.add(LeaveType(name=name))
+    leave_types = {
+        "Annual Leave": ("ANNUAL", 22, "monthly"),
+        "Sick Leave": ("SICK", 7, "annual"),
+        "Maternity Leave": ("MATERNITY", 84, "event"),
+        "Paternity Leave": ("PATERNITY", 3, "event"),
+        "Leave Without Pay": ("LWP", 0, "none"),
+        "Compassionate Leave": ("COMPASSIONATE", 0, "annual"),
+        "Off in Lieu": ("OFF_IN_LIEU", 0, "annual"),
+        "WFH": ("WFH", 0, "annual"),
+    }
+    for name, (code, days, accrual) in leave_types.items():
+        item = LeaveType.query.filter_by(name=name).first() or LeaveType(name=name)
+        item.code, item.default_days, item.accrual_method = code, days, accrual
+        item.requires_manager_approval = True
+        db.session.add(item)
     db.session.commit()
