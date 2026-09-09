@@ -19,7 +19,7 @@ class User(UserMixin, db.Model):
 
     @property
     def has_hr_access(self):
-        return self.is_administrator or bool(self.access_role and self.access_role.grants_hr_access) or self.role in {"admin", "hr"}
+        return self.is_administrator or bool(self.access_role and self.access_role.grants_hr_access)
 
     @property
     def can_approve_leave(self):
