@@ -1,21 +1,37 @@
-{% extends 'base.html' %}{% block title %}Overview · Pointlabs One{% endblock %}{% block content %}
-<section class="page-head hero-head">
-  <div><div class="eyebrow">POINTLABS PEOPLE OPERATIONS</div><h1>{{ greeting }}, {{ current_user.employee_profile.full_name.split(' ')[0] if current_user.employee_profile else current_user.username }}.</h1><p>{% if current_user.has_hr_access %}A live, focused view of people operations, outstanding decisions and today’s availability.{% else %}Your personal hub for time off, HR support, secure documents and the work that needs your attention.{% endif %}</p></div>
-  <div class="head-actions"><a class="secondary-action" href="{{ url_for('main.messages') }}">Open inbox{% if unread_messages %}<span class="count-pill">{{ unread_messages }}</span>{% endif %}</a><a class="primary-action" href="{{ url_for('main.leave') }}">Request time off</a></div>
+{% extends 'base.html' %}
+{% block title %}Overview · Pointlabs One{% endblock %}
+{% block content %}
+<section class="welcome-row">
+  <div>
+    <div class="eyebrow">POINTLABS PEOPLE OPERATIONS</div>
+    <h1>{{ greeting }}, {{ ((current_user.employee_profile.preferred_name or current_user.employee_profile.full_name).split(' ')[0]) if current_user.employee_profile else current_user.username }}.</h1>
+    <p>{% if current_user.has_hr_access %}Here is what needs attention across your people workspace today.{% else %}Everything you need for your workday, requests and employee record.{% endif %}</p>
+  </div>
+  <div class="welcome-actions"><a class="secondary-action" href="{{ url_for('main.messages') }}">Open inbox{% if unread_messages %}<span class="count-pill">{{ unread_messages }}</span>{% endif %}</a><a class="primary-action" href="{{ url_for('main.leave') }}">Request time off</a></div>
 </section>
+
 <section class="metrics" aria-label="Today at a glance">
-  <article class="metric-card gold"><small>{% if current_user.can_approve_leave %}DECISIONS TO MAKE{% else %}MY REQUESTS{% endif %}</small><div class="metric-value">{{ pending }}</div><div class="metric-note">{% if current_user.can_approve_leave %}Awaiting your review{% else %}Items in progress{% endif %}</div></article>
-  <article class="metric-card"><small>ON LEAVE TODAY</small><div class="metric-value">{{ today|length }}</div><div class="metric-note">Approved leave coverage</div></article>
-  <article class="metric-card"><small>UNREAD UPDATES</small><div class="metric-value">{{ notifications|length }}</div><div class="metric-note">Notifications requiring attention</div></article>
-  <article class="metric-card"><small>{% if current_user.has_hr_access %}TOTAL ACTIVE EMPLOYEES{% else %}POINTLABS ONE{% endif %}</small><div class="metric-value">{% if current_user.has_hr_access %}{{ people_count }}{% else %}1{% endif %}</div><div class="metric-note">{% if current_user.has_hr_access %}Current active records{% else %}Your secure employee workspace{% endif %}</div></article>
+  <article class="metric-card metric-primary"><div class="metric-icon"><svg viewBox="0 0 24 24"><path d="M4 12.5 9 17l11-11"/></svg></div><div><small>{{ 'DECISIONS TO MAKE' if current_user.can_approve_leave else 'ACTIVE HR REQUESTS' }}</small><div class="metric-value">{{ pending if current_user.can_approve_leave else active_requests }}</div><div class="metric-note">{{ 'Awaiting your review' if current_user.can_approve_leave else 'Currently in progress' }}</div></div></article>
+  <article class="metric-card metric-mint"><div class="metric-icon"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="15" rx="2"/><path d="M8 3v4m8-4v4M7 11h10"/></svg></div><div><small>ON LEAVE TODAY</small><div class="metric-value">{{ today|length }}</div><div class="metric-note">Approved team leave</div></div></article>
+  <article class="metric-card metric-blue"><div class="metric-icon"><svg viewBox="0 0 24 24"><path d="M4 5h16v11H8l-4 4z"/></svg></div><div><small>UNREAD UPDATES</small><div class="metric-value">{{ notifications|length + unread_messages }}</div><div class="metric-note">Messages and notifications</div></div></article>
+  <article class="metric-card metric-gold"><div class="metric-icon"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6M17 7h4m-2-2v4"/></svg></div><div><small>{{ 'TOTAL ACTIVE EMPLOYEES' if current_user.has_hr_access else 'TODAY’S ATTENDANCE' }}</small><div class="metric-value">{% if current_user.has_hr_access %}{{ people_count }}{% elif attendance_today and attendance_today.checked_out_at %}Done{% elif attendance_today %}In{% else %}—{% endif %}</div><div class="metric-note">{% if current_user.has_hr_access %}Current people records{% elif attendance_today %}Workday recorded{% else %}Not checked in yet{% endif %}</div></div></article>
 </section>
-<section class="dashboard-grid">
-  <article class="panel"><div class="panel-head"><div><span class="section-kicker">TODAY’S AVAILABILITY</span><h2>Leave coverage</h2></div><a class="subtle-link" href="{{ url_for('main.leave') }}">Manage leave →</a></div>
-    {% for item in today %}<div class="list-row"><span class="avatar">{{ (item.user.employee_profile.full_name if item.user.employee_profile else item.user.username)[:1] }}</span><div><b>{{ item.user.employee_profile.full_name if item.user.employee_profile else item.user.username }}</b><small>{{ item.leave_type.name }} · returns {{ item.end_date.strftime('%d %b') }}</small></div><span class="status">Approved</span></div>{% else %}<div class="empty-state"><div class="empty-orb">✓</div><b>Team availability is clear</b><p>No approved leave overlaps today.</p></div>{% endfor %}
-  </article>
-  <aside class="stack">
-    <article class="panel"><div class="panel-head"><div><span class="section-kicker">PRIORITY INBOX</span><h2>Recent updates</h2></div><a class="subtle-link" href="{{ url_for('main.messages') }}">View inbox →</a></div>{% for note in notifications[:3] %}<div class="notice-row"><span>✦</span><div>{{ note.message }}<small>{{ note.created_at.strftime('%d %b · %H:%M') }}</small></div></div>{% else %}<div class="empty-state compact"><div class="empty-orb">✓</div><b>You’re up to date</b><p>Important updates will appear here.</p></div>{% endfor %}</article>
-    <article class="quick-panel"><span class="section-kicker">QUICK ACTIONS</span><a href="{{ url_for('main.workspace') }}">Plan my workspace</a><a href="{{ url_for('main.other_requests') }}">Create an HR request</a>{% if current_user.can_approve_leave %}<a href="{{ url_for('main.approvals') }}">Review approvals</a>{% endif %}{% if current_user.has_hr_access %}<a href="{{ url_for('main.admin_panel') }}">Open admin centre</a>{% endif %}</article>
+
+<section class="dashboard-layout">
+  <div class="dashboard-main">
+    <article class="panel coverage-panel">
+      <div class="panel-head"><div><span class="section-kicker">TODAY’S AVAILABILITY</span><h2>Leave coverage</h2></div><a class="subtle-link" href="{{ url_for('main.leave') }}">Manage leave →</a></div>
+      {% for item in today %}<div class="list-row"><span class="avatar">{{ (item.user.employee_profile.full_name if item.user.employee_profile else item.user.username)[:1] }}</span><div><b>{{ item.user.employee_profile.full_name if item.user.employee_profile else item.user.username }}</b><small>{{ item.leave_type.name }} · returns {{ item.end_date.strftime('%d %b') }}</small></div><span class="status">Approved</span></div>{% else %}<div class="empty-state"><div class="empty-orb"><svg viewBox="0 0 24 24"><path d="M4 12.5 9 17l11-11"/></svg></div><b>Team availability is clear</b><p>No approved leave overlaps today.</p></div>{% endfor %}
+    </article>
+    <article class="panel activity-panel">
+      <div class="panel-head"><div><span class="section-kicker">MY FOCUS</span><h2>Next actions</h2></div><a class="subtle-link" href="{{ url_for('main.workspace') }}">Open workspace →</a></div>
+      {% for task in focus_tasks %}<div class="list-row task-preview"><span class="task-dot"></span><div><b>{{ task.title }}</b><small>{% if task.due_at %}Due {{ task.due_at.strftime('%d %b · %H:%M') }}{% else %}No due date{% endif %}</small></div></div>{% else %}<div class="empty-state compact"><div class="empty-orb"><svg viewBox="0 0 24 24"><path d="M8 6h8M8 12h8M8 18h5"/></svg></div><b>Your focus list is clear</b><p>Add tasks and reminders from My workspace.</p></div>{% endfor %}
+    </article>
+  </div>
+  <aside class="dashboard-side">
+    <article class="panel updates-panel"><div class="panel-head"><div><span class="section-kicker">PRIORITY INBOX</span><h2>Recent updates</h2></div><a class="subtle-link" href="{{ url_for('main.messages') }}">View all →</a></div>{% for note in notifications[:3] %}<div class="notice-row"><span>✦</span><div>{{ note.message }}<small>{{ note.created_at.strftime('%d %b · %H:%M') }}</small></div></div>{% else %}<div class="empty-state compact"><b>You’re up to date</b><p>Important updates will appear here.</p></div>{% endfor %}</article>
+    {% if current_user.has_hr_access %}<article class="panel birthday-panel"><div class="panel-head"><div><span class="section-kicker">PEOPLE MOMENTS</span><h2>Upcoming birthdays</h2></div><a class="subtle-link" href="{{ url_for('main.birthdays') }}">View calendar →</a></div>{% for birthday, profile in upcoming_birthdays %}<div class="list-row"><span class="avatar">{{ profile.full_name[:1] }}</span><div><b>{{ profile.full_name }}</b><small>{{ profile.designation.name if profile.designation else 'Team member' }}</small></div><span class="date-chip">{{ birthday.strftime('%d %b') }}</span></div>{% else %}<div class="empty-state compact"><b>No birthdays in the next 45 days</b></div>{% endfor %}</article>{% endif %}
+    <article class="quick-panel"><span class="section-kicker">QUICK ACTIONS</span><div class="quick-grid"><a href="{{ url_for('main.workspace') }}"><svg viewBox="0 0 24 24"><path d="M5 4h14v16H5zM8 9h8m-8 4h6"/></svg><span>Plan work</span></a><a href="{{ url_for('main.other_requests') }}"><svg viewBox="0 0 24 24"><path d="M6 3h9l3 3v15H6zM15 3v4h4"/></svg><span>HR request</span></a>{% if current_user.can_approve_leave %}<a href="{{ url_for('main.approvals') }}"><svg viewBox="0 0 24 24"><path d="M4 12.5 9 17l11-11"/></svg><span>Approvals</span></a>{% endif %}{% if current_user.has_hr_access %}<a href="{{ url_for('main.admin_panel') }}"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 3v3m0 12v3M3 12h3m12 0h3"/></svg><span>Admin centre</span></a>{% endif %}</div></article>
   </aside>
 </section>
 {% endblock %}

@@ -27,6 +27,23 @@ def test_dashboard_uses_time_aware_greeting(client, app):
     assert response.data.count(b'brand-logo-frame') == 2
 
 
+def test_dashboard_handles_leap_day_birthdays_in_non_leap_years(client, app):
+    from datetime import date
+
+    with app.app_context():
+        seed_reference_data("admin123")
+        admin = User.query.filter_by(username="admin").one()
+        employee = User(username="leapday", must_change_password=False)
+        employee.set_password("password")
+        db.session.add(employee)
+        db.session.flush()
+        db.session.add(EmployeeProfile(user_id=employee.id, full_name="Leap Day", date_of_birth=date(2000, 2, 29)))
+        db.session.commit()
+        sign_in(client, admin)
+
+    assert client.get("/").status_code == 200
+
+
 def test_administrator_directory_renders_for_profiles_with_reporting_relations(client, app):
     with app.app_context():
         seed_reference_data("admin123")

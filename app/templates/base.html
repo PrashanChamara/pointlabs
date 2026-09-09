@@ -2,13 +2,13 @@
 <html lang="en" data-theme="light">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="theme-color" content="#f7fbf6">
+  <meta name="theme-color" content="#f4f7f3">
   <meta name="csrf-token" content="{{ csrf_token() }}">
   <title>{% block title %}Pointlabs One{% endblock %}</title>
   <link rel="manifest" href="{{ url_for('static', filename='manifest.webmanifest') }}">
   <link rel="icon" href="{{ url_for('static', filename='icon.png') }}">
-  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
-  <link rel="stylesheet" href="{{ url_for('static', filename='auth.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='20260909-2') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='auth.css', v='20260909-2') }}">
   <script>document.documentElement.dataset.theme=localStorage.getItem('pointlabs-theme')||'light'</script>
 </head>
 <body>
@@ -18,7 +18,7 @@
     {% block content %}{% endblock %}
   </main>
   {% if current_user.is_authenticated and workspace_sticky_notes %}<aside class="global-sticky-stack" aria-label="Workspace notes">{% for note in workspace_sticky_notes %}<div class="global-sticky {{ note.color }}">{{ note.body }}</div>{% endfor %}</aside>{% endif %}
-  <script src="{{ url_for('static', filename='app.js') }}"></script>
+  <script src="{{ url_for('static', filename='app.js', v='20260909-2') }}"></script>
   <script>if('serviceWorker' in navigator) navigator.serviceWorker.register('/static/service-worker.js')</script>
 </body>
 </html>

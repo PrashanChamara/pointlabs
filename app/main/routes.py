@@ -134,6 +134,18 @@ def greeting_for_hour(hour):
     return "Good evening"
 
 
+def next_birthday(date_of_birth, today):
+    """Return the next birthday, treating 29 February as 28 February in non-leap years."""
+    def in_year(year):
+        try:
+            return date_of_birth.replace(year=year)
+        except ValueError:
+            return date(year, 2, 28)
+
+    birthday = in_year(today.year)
+    return birthday if birthday >= today else in_year(today.year + 1)
+
+
 def display_name(user):
     return user.employee_profile.full_name if user.employee_profile else user.username
 
@@ -156,11 +168,27 @@ def dashboard():
     pending = LeaveRequest.query.filter(LeaveRequest.status.in_(("submitted", "returned", "cancellation_requested"))).count() if current_user.can_approve_leave else 0
     today = LeaveRequest.query.filter(LeaveRequest.status == "approved", LeaveRequest.start_date <= date.today(), LeaveRequest.end_date >= date.today()).all()
     notifications = Notification.query.filter_by(user_id=current_user.id, is_read=False).order_by(Notification.created_at.desc()).all()
+    active_request_statuses = ("submitted", "resubmitted", "more_information_required", "in_review", "in_progress")
+    request_query = OtherRequest.query.filter(OtherRequest.status.in_(active_request_statuses))
+    active_requests = request_query.count() if current_user.has_hr_access else request_query.filter_by(user_id=current_user.id).count()
+    focus_tasks = WorkspaceTask.query.filter_by(user_id=current_user.id, completed_at=None).order_by(
+        WorkspaceTask.due_at.is_(None), WorkspaceTask.due_at, WorkspaceTask.created_at.desc(),
+    ).limit(4).all()
+    attendance_today = AttendanceRecord.query.filter_by(user_id=current_user.id, work_date=date.today()).first()
+    upcoming_birthdays = []
+    if current_user.has_hr_access:
+        for profile in EmployeeProfile.query.join(User, EmployeeProfile.user_id == User.id).filter(User.is_active.is_(True), EmployeeProfile.date_of_birth.isnot(None)).all():
+            birthday = next_birthday(profile.date_of_birth, date.today())
+            if birthday <= date.today() + timedelta(days=45):
+                upcoming_birthdays.append((birthday, profile))
+        upcoming_birthdays.sort(key=lambda item: item[0])
     return render_template(
         "dashboard.html", pending=pending, today=today, notifications=notifications,
         unread_messages=DirectMessage.query.filter_by(recipient_id=current_user.id, is_read=False).count(),
         greeting=greeting_for_hour(datetime.now().hour),
         people_count=EmployeeProfile.query.join(User, EmployeeProfile.user_id == User.id).filter(User.is_active.is_(True)).count(),
+        active_requests=active_requests, focus_tasks=focus_tasks, attendance_today=attendance_today,
+        upcoming_birthdays=upcoming_birthdays[:4],
     )
 
 
