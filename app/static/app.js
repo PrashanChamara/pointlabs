@@ -1,7 +1,7 @@
 const root = document.documentElement;
 const sidebar = document.querySelector('#sidebar');
 const menuButton = document.querySelector('[data-menu-toggle]');
-const closeButton = document.querySelector('[data-menu-close]');
+const closeButtons = document.querySelectorAll('[data-menu-close]');
 const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content;
 
 if (csrfToken) {
@@ -19,6 +19,7 @@ document.querySelector('[data-theme-toggle]')?.addEventListener('click', () => {
   const next = root.dataset.theme === 'dark' ? 'light' : 'dark';
   root.dataset.theme = next;
   localStorage.setItem('pointlabs-theme', next);
+  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', next === 'dark' ? '#101512' : '#f4f7f3');
 });
 
 const closeMenu = () => {
@@ -30,7 +31,7 @@ menuButton?.addEventListener('click', () => {
   const isOpen = sidebar?.classList.toggle('open');
   menuButton.setAttribute('aria-expanded', String(Boolean(isOpen)));
 });
-closeButton?.addEventListener('click', closeMenu);
+closeButtons.forEach((button) => button.addEventListener('click', closeMenu));
 
 document.addEventListener('click', (event) => {
   if (window.innerWidth <= 680 && sidebar?.classList.contains('open') && !sidebar.contains(event.target) && !menuButton?.contains(event.target)) closeMenu();
@@ -38,6 +39,14 @@ document.addEventListener('click', (event) => {
 document.addEventListener('keydown', (event) => { if (event.key === 'Escape') closeMenu(); });
 window.addEventListener('resize', () => { if (window.innerWidth > 680) closeMenu(); });
 sidebar?.querySelectorAll('a').forEach((link) => link.addEventListener('click', () => { if (window.innerWidth <= 680) closeMenu(); }));
+
+document.querySelectorAll('.nav-link').forEach((link) => {
+  const target = new URL(link.href, window.location.origin).pathname;
+  if (target === window.location.pathname) {
+    link.classList.add('is-current');
+    link.setAttribute('aria-current', 'page');
+  }
+});
 
 const liveClock = document.querySelector('[data-live-clock]');
 if (liveClock) {

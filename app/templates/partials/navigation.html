@@ -1,25 +1,28 @@
-<aside class="sidebar" id="sidebar">
-  <div class="drawer-brand-row">
-    <a class="brand" href="{{ url_for('main.dashboard') }}" aria-label="Pointlabs home">
+<div class="mobile-scrim" data-menu-close aria-hidden="true"></div>
+<aside class="sidebar" id="sidebar" aria-label="Pointlabs One navigation">
+  <div class="sidebar-brand">
+    <a class="brand" href="{{ url_for('main.dashboard') }}" aria-label="Pointlabs One home">
       <span class="brand-logo-frame"><img class="brand-logo brand-logo-light" src="{{ url_for('static', filename='images/logo-light.png') }}" alt="Pointlabs"></span>
-      <span class="brand-logo-frame"><img class="brand-logo brand-logo-dark" src="{{ url_for('static', filename='images/logo-dark.jpg') }}" alt="Pointlabs"></span>
+      <span class="brand-logo-frame brand-logo-dark-frame"><img class="brand-logo brand-logo-dark" src="{{ url_for('static', filename='images/logo-dark.jpg') }}" alt="Pointlabs"></span>
+      <span class="brand-product">One</span>
     </a>
-    <button class="drawer-close" type="button" aria-label="Close menu" data-menu-close>×</button>
+    <button class="drawer-close icon-button" type="button" aria-label="Close menu" data-menu-close><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10M17 7 7 17"/></svg></button>
   </div>
-  <div class="workspace-label">WORKSPACE</div>
   <nav class="side-nav" aria-label="Main navigation">
-    {% if current_user.has_hr_access %}<a class="nav-link" href="{{ url_for('main.employees') }}"><span>◉</span>Employee list</a>{% endif %}
-    <a class="nav-link" href="{{ url_for('main.messages') }}"><span>✦</span>Messages</a>
-    <a class="nav-link" href="{{ url_for('main.workspace') }}"><span>◌</span>My workspace</a>
-    <a class="nav-link" href="{{ url_for('main.attendance') }}"><span>◷</span>My attendance</a>
-    <a class="nav-link" href="{{ url_for('main.other_requests') }}"><span>◌</span>Other requests</a>
-    <a class="nav-link" href="{{ url_for('main.dashboard') }}"><span>⌂</span>Dashboard</a>
-    {% if current_user.can_approve_leave %}<a class="nav-link" href="{{ url_for('main.approvals') }}"><span>✓</span>Approvals</a>{% endif %}
-    {% if current_user.has_hr_access %}<a class="nav-link" href="{{ url_for('main.reports') }}"><span>▥</span>Reports</a>{% endif %}
-    <a class="nav-link" href="{{ url_for('main.leave') }}"><span>◷</span>My leave</a>
-    <a class="nav-link" href="{{ url_for('main.payslips') }}"><span>▤</span>My payslips</a>
-    {% if current_user.has_hr_access %}<div class="workspace-label">ADMINISTRATION</div><a class="nav-link" href="{{ url_for('main.admin_panel') }}"><span>⌘</span>Admin panel</a><a class="nav-link" href="{{ url_for('main.audit_log') }}"><span>≡</span>Audit history</a>{% if current_user.is_administrator or current_user.access_role and current_user.access_role.can_manage_configuration %}<a class="nav-link" href="{{ url_for('main.workflows') }}"><span>↗</span>Approval workflows</a><a class="nav-link" href="{{ url_for('main.access_roles') }}"><span>◈</span>Access roles</a>{% endif %}{% endif %}
+    <p class="nav-section">WORKSPACE</p>
+    <a class="nav-link" href="{{ url_for('main.dashboard') }}"><span class="nav-icon"><svg viewBox="0 0 24 24"><path d="m3 11 9-7 9 7v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg></span><span>Overview</span></a>
+    <a class="nav-link" href="{{ url_for('main.workspace') }}"><span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M8 3h8M9 3v3m6-3v3M5 7h14v13H5zM8 11h8M8 15h5"/></svg></span><span>My workspace</span></a>
+    <a class="nav-link" href="{{ url_for('main.messages') }}"><span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M4 5h16v11H8l-4 4zM8 9h8m-8 3h5"/></svg></span><span>Messages</span></a>
+    <p class="nav-section">PEOPLE &amp; TIME</p>
+    {% if current_user.has_hr_access %}<a class="nav-link" href="{{ url_for('main.employees') }}"><span class="nav-icon"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6M17 7h4m-2-2v4m-2 7h4m-4 4h4"/></svg></span><span>People directory</span></a>{% endif %}
+    <a class="nav-link" href="{{ url_for('main.attendance') }}"><span class="nav-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 7v5l3 2"/></svg></span><span>Attendance</span></a>
+    <a class="nav-link" href="{{ url_for('main.leave') }}"><span class="nav-icon"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="15" rx="2"/><path d="M8 3v4m8-4v4M7 11h10m-7 4 2 2 4-4"/></svg></span><span>Leave &amp; time off</span></a>
+    <a class="nav-link" href="{{ url_for('main.other_requests') }}"><span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M6 3h9l3 3v15H6zM15 3v4h4M9 12h6m-6 4h4"/></svg></span><span>HR requests</span></a>
+    <a class="nav-link" href="{{ url_for('main.payslips') }}"><span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M5 3h14v18H5zM8 8h8M8 12h5M8 16h8"/></svg></span><span>My payslips</span></a>
+    {% if current_user.can_approve_leave %}<a class="nav-link nav-link-attention" href="{{ url_for('main.approvals') }}"><span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M4 12.5 9 17l11-11"/></svg></span><span>Approvals</span><i>Action</i></a>{% endif %}
+    {% if current_user.has_hr_access %}<a class="nav-link" href="{{ url_for('main.reports') }}"><span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M5 20V10m5 10V4m5 16v-7m5 7V7"/></svg></span><span>Reports</span></a>{% endif %}
+    {% if current_user.has_hr_access %}<p class="nav-section">ADMINISTRATION</p><a class="nav-link" href="{{ url_for('main.admin_panel') }}"><span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M12 3v3m0 12v3M3 12h3m12 0h3M5.6 5.6l2.1 2.1m8.6 8.6 2.1 2.1m0-12.8-2.1 2.1M7.7 16.3l-2.1 2.1"/><circle cx="12" cy="12" r="4"/></svg></span><span>Admin centre</span></a>{% if current_user.is_administrator or current_user.access_role and current_user.access_role.can_manage_configuration %}<a class="nav-link" href="{{ url_for('main.workflows') }}"><span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M5 5h6v6H5zM13 13h6v6h-6zM11 8h2c3.3 0 4 1.7 4 5M8 11v2c0 3.3 1.7 4 5 4"/></svg></span><span>Workflow studio</span></a>{% endif %}{% endif %}
   </nav>
-  <div class="sidebar-footer"><a class="account-card" href="{{ url_for('main.profile') }}" title="Open my profile"><span class="avatar avatar-large">{{ current_user.username[:1]|upper }}</span><span><b>{{ current_user.employee_profile.full_name if current_user.employee_profile else current_user.username }}</b><small>{{ 'Administrator' if current_user.is_administrator else 'Employee account' }}</small></span><i>›</i></a><a href="{{ url_for('auth.logout') }}" class="logout">Sign out <span>↗</span></a></div>
+  <div class="sidebar-footer"><a class="account-card" href="{{ url_for('main.profile') }}" title="Open my profile"><span class="avatar avatar-large">{{ current_user.username[:1]|upper }}</span><span><b>{{ current_user.employee_profile.full_name if current_user.employee_profile else current_user.username }}</b><small>{{ 'System administrator' if current_user.is_administrator else (current_user.access_role.name if current_user.access_role else 'Employee account') }}</small></span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg></a><a href="{{ url_for('auth.logout') }}" class="logout"><span>Sign out</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 17l5-5-5-5M15 12H3m8-8h7v16h-7"/></svg></a></div>
 </aside>
-<header class="topbar"><button class="icon-button mobile-menu" aria-label="Open menu" aria-expanded="false" data-menu-toggle>☰</button><div class="app-identity" aria-label="Pointlabs One"><span>Pointlabs</span><img src="{{ url_for('static', filename='images/pointlabs-ring.png') }}" alt="">ne</div><div class="topbar-actions"><time class="live-clock" data-live-clock aria-label="Current local time"></time><a class="top-message" href="{{ url_for('main.messages') }}" aria-label="Open messages">✦</a><button class="icon-button" aria-label="Toggle color theme" data-theme-toggle>◐</button></div></header>
+<header class="topbar"><button class="icon-button mobile-menu" aria-label="Open menu" aria-expanded="false" data-menu-toggle><svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button><div class="mobile-product-name app-identity">Pointlabs <b>One</b></div>{% if current_user.has_hr_access %}<form class="global-search" method="get" action="{{ url_for('main.employees') }}"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"/><path d="m16 16 4 4"/></svg><input name="q" aria-label="Search people" placeholder="Search people, employee codes or work email"></form>{% else %}<div class="topbar-context">People operations workspace</div>{% endif %}<div class="topbar-actions"><time class="live-clock" data-live-clock aria-label="Current local time"></time><a class="top-message" href="{{ url_for('main.messages') }}" aria-label="Open messages"><svg viewBox="0 0 24 24"><path d="M4 5h16v11H8l-4 4z"/></svg></a><button class="icon-button" aria-label="Toggle color theme" data-theme-toggle><svg viewBox="0 0 24 24"><path d="M12 3v18M12 3a9 9 0 0 1 0 18"/><circle cx="12" cy="12" r="9"/></svg></button></div></header>
