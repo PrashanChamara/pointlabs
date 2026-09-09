@@ -984,6 +984,21 @@ def access_roles():
     return render_template("access_roles.html", roles=AccessRole.query.order_by(AccessRole.name).all())
 
 
+@bp.post("/admin/access-roles/<int:role_id>/toggle")
+@login_required
+def toggle_access_role(role_id):
+    denied = admin_only()
+    if denied:
+        return denied
+    role = db.get_or_404(AccessRole, role_id)
+    # Archive rather than delete: role assignment and historic workflow decisions stay valid.
+    role.is_active = not role.is_active
+    db.session.add(AuditEvent(actor_id=current_user.id, entity_type="access_role", entity_id=role.id, action="activated" if role.is_active else "archived", summary=f"Access role {role.name} was {'activated' if role.is_active else 'archived'}."))
+    db.session.commit()
+    flash("Access role status updated. Existing assignments and historical decisions were retained.")
+    return redirect(url_for("main.access_roles"))
+
+
 @bp.route("/admin/workflows", methods=["GET", "POST"])
 @login_required
 def workflows():

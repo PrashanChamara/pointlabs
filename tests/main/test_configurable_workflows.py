@@ -66,6 +66,22 @@ def test_hr_can_open_workflow_studio(client, app):
     assert b"Approval workflows" in response.data
 
 
+def test_admin_can_archive_an_access_role_without_deleting_it(client, app):
+    from app.models.organization import AccessRole
+    with app.app_context():
+        seed_reference_data("admin123")
+        admin = User.query.filter_by(username="admin").one()
+        role = AccessRole(name="Temporary reviewer")
+        db.session.add(role); db.session.commit()
+        role_id = role.id
+        with client.session_transaction() as session:
+            session["_user_id"] = str(admin.id); session["_fresh"] = True
+    response = client.post(f"/admin/access-roles/{role_id}/toggle")
+    assert response.status_code == 302
+    with app.app_context():
+        assert db.session.get(AccessRole, role_id).is_active is False
+
+
 def test_more_information_can_be_resubmitted_without_duplicate_route(app):
     with app.app_context():
         designation = Designation(name="Workflow HR")
