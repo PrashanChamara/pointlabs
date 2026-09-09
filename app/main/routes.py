@@ -11,7 +11,7 @@ from sqlalchemy import or_
 from app.extensions import db
 from app.main import bp
 from app.models.hr import (
-    AuditEvent, CompensationRecord, DirectMessage, EmployeeDocument, LeaveBalance, LeaveRequest,
+    AttendanceRecord, AuditEvent, CompensationRecord, DirectMessage, EmployeeDocument, LeaveBalance, LeaveRequest,
     LeaveType, Notification, OtherRequest, OtherRequestActivity, OtherRequestAttachment,
     Payslip, PublicHoliday, RequestType, ApprovalWorkflow, ApprovalWorkflowStep,
     ApprovalDecision, ApprovalInstance, WorkspaceNote, WorkspaceTask,
@@ -750,6 +750,56 @@ def workspace():
     tasks = WorkspaceTask.query.filter_by(user_id=current_user.id).order_by(WorkspaceTask.completed_at.isnot(None), WorkspaceTask.due_at.is_(None), WorkspaceTask.due_at, WorkspaceTask.created_at.desc()).all()
     notes = WorkspaceNote.query.filter((WorkspaceNote.user_id == current_user.id) | (WorkspaceNote.is_global.is_(True))).order_by(WorkspaceNote.created_at.desc()).all()
     return render_template("workspace.html", tasks=tasks, notes=notes, now=datetime.utcnow())
+
+
+@bp.route("/attendance", methods=["GET", "POST"])
+@login_required
+def attendance():
+    today = date.today()
+    record = AttendanceRecord.query.filter_by(user_id=current_user.id, work_date=today).first()
+    if request.method == "POST":
+        action = request.form.get("action")
+        now = datetime.utcnow()
+        if action == "check-in":
+            if record:
+                flash("You have already checked in today.")
+            else:
+                db.session.add(AttendanceRecord(user_id=current_user.id, work_date=today, checked_in_at=now, check_in_note=request.form.get("note", "").strip()[:500] or None))
+                db.session.commit(); flash("Check-in recorded.")
+        elif action == "check-out":
+            if not record or record.checked_out_at:
+                flash("There is no open attendance record to check out.")
+            else:
+                record.checked_out_at, record.check_out_note = now, request.form.get("note", "").strip()[:500] or None
+                db.session.commit(); flash("Check-out recorded. Have a good evening.")
+        else:
+            return "Invalid attendance action", 400
+        return redirect(url_for("main.attendance"))
+    history = AttendanceRecord.query.filter_by(user_id=current_user.id).order_by(AttendanceRecord.work_date.desc()).limit(20).all()
+    return render_template("attendance.html", record=record, history=history, today=today)
+
+
+@bp.get("/admin/attendance.csv")
+@login_required
+def attendance_export():
+    denied = admin_only()
+    if denied:
+        return denied
+    try:
+        from_date = date.fromisoformat(request.args.get("from_date", "")) if request.args.get("from_date") else date.today().replace(day=1)
+        to_date = date.fromisoformat(request.args.get("to_date", "")) if request.args.get("to_date") else date.today()
+    except ValueError:
+        return "Invalid date range", 400
+    if to_date < from_date:
+        return "Invalid date range", 400
+    stream = StringIO(); writer = csv.writer(stream)
+    writer.writerow(["Employee Code", "Employee", "Department", "Location", "Work Date", "Checked In", "Checked Out", "Hours Worked"])
+    records = AttendanceRecord.query.join(User).filter(AttendanceRecord.work_date.between(from_date, to_date)).order_by(AttendanceRecord.work_date, AttendanceRecord.user_id).all()
+    for item in records:
+        profile = item.user.employee_profile
+        hours = round((item.checked_out_at - item.checked_in_at).total_seconds() / 3600, 2) if item.checked_out_at else ""
+        writer.writerow([profile.employee_code if profile else "", profile.full_name if profile else item.user.username, profile.department.name if profile and profile.department else "", profile.location.name if profile and profile.location else "", item.work_date.isoformat(), item.checked_in_at.isoformat(sep=" "), item.checked_out_at.isoformat(sep=" ") if item.checked_out_at else "", hours])
+    return send_file(BytesIO(stream.getvalue().encode()), mimetype="text/csv", as_attachment=True, download_name=f"pointlabs-attendance-{from_date}-{to_date}.csv")
 
 
 @bp.route("/documents", methods=["GET", "POST"])

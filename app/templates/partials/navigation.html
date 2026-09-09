@@ -11,6 +11,7 @@
     {% if current_user.has_hr_access %}<a class="nav-link" href="{{ url_for('main.employees') }}"><span>◉</span>Employee list</a>{% endif %}
     <a class="nav-link" href="{{ url_for('main.messages') }}"><span>✦</span>Messages</a>
     <a class="nav-link" href="{{ url_for('main.workspace') }}"><span>◌</span>My workspace</a>
+    <a class="nav-link" href="{{ url_for('main.attendance') }}"><span>◷</span>My attendance</a>
     <a class="nav-link" href="{{ url_for('main.other_requests') }}"><span>◌</span>Other requests</a>
     <a class="nav-link" href="{{ url_for('main.dashboard') }}"><span>⌂</span>Dashboard</a>
     {% if current_user.can_approve_leave %}<a class="nav-link" href="{{ url_for('main.approvals') }}"><span>✓</span>Approvals</a>{% endif %}

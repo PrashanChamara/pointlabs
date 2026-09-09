@@ -306,6 +306,20 @@ class WorkspaceTask(db.Model):
     user = db.relationship("User", foreign_keys=[user_id], backref="workspace_tasks")
 
 
+class AttendanceRecord(db.Model):
+    """One employee workday record; all timestamps are retained for HR reporting."""
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
+    work_date = db.Column(db.Date, nullable=False, index=True)
+    checked_in_at = db.Column(db.DateTime, nullable=False)
+    checked_out_at = db.Column(db.DateTime, nullable=True)
+    check_in_note = db.Column(db.String(500), nullable=True)
+    check_out_note = db.Column(db.String(500), nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    user = db.relationship("User", foreign_keys=[user_id], backref="attendance_records")
+    __table_args__ = (db.UniqueConstraint("user_id", "work_date", name="uq_attendance_user_work_date"),)
+
+
 class WorkspaceNote(db.Model):
     """A note can be personal or deliberately published by HR to every workspace."""
     id = db.Column(db.Integer, primary_key=True)
