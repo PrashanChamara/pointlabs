@@ -67,6 +67,12 @@ def create_app(config_name="development"):
         count = process_due_task_reminders()
         print(f"Processed {count} due task reminder(s).")
 
+    @app.cli.command("process-compliance")
+    def process_compliance():
+        """Create once-only Passport and Emirates ID expiry alerts for scheduled use."""
+        from app.services.compliance import process_expiry_reminders
+        print(f"Processed {process_expiry_reminders()} credential-expiry reminder(s).")
+
     @login_manager.user_loader
     def load_user(user_id):
         from app.models.user import User

@@ -320,6 +320,18 @@ class AttendanceRecord(db.Model):
     __table_args__ = (db.UniqueConstraint("user_id", "work_date", name="uq_attendance_user_work_date"),)
 
 
+class ComplianceReminder(db.Model):
+    """Idempotency record for credential-expiry alerts."""
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
+    document_kind = db.Column(db.String(80), nullable=False)
+    expiry_date = db.Column(db.Date, nullable=False)
+    threshold_days = db.Column(db.Integer, nullable=False)
+    sent_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    user = db.relationship("User", foreign_keys=[user_id])
+    __table_args__ = (db.UniqueConstraint("user_id", "document_kind", "expiry_date", "threshold_days", name="uq_compliance_reminder_delivery"),)
+
+
 class WorkspaceNote(db.Model):
     """A note can be personal or deliberately published by HR to every workspace."""
     id = db.Column(db.Integer, primary_key=True)
