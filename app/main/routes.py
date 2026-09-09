@@ -13,7 +13,8 @@ from app.main import bp
 from app.models.hr import (
     AuditEvent, CompensationRecord, DirectMessage, EmployeeDocument, LeaveBalance, LeaveRequest,
     LeaveType, Notification, OtherRequest, OtherRequestActivity, OtherRequestAttachment,
-    Payslip, PublicHoliday,
+    Payslip, PublicHoliday, RequestType, ApprovalWorkflow, ApprovalWorkflowStep,
+    ApprovalDecision, ApprovalInstance, WorkspaceNote, WorkspaceTask,
 )
 from app.models.organization import Department, Designation, Entity, Location
 from app.models.user import EmployeeProfile, User
@@ -31,6 +32,7 @@ from app.services.pdf import (
     generate_leave_confirmation_pdf, generate_payslip_pdf, leave_confirmation_pdf_path,
     payslip_pdf_path,
 )
+from app.services.workflows import active_workflow, decide, pending_decisions_for, resubmit_after_more_information, start_workflow
 
 
 def admin_only():
@@ -188,8 +190,18 @@ def leave():
                 flash("The requested days exceed the available balance and were recorded as Leave Without Pay for review.")
         item = LeaveRequest(user_id=current_user.id, leave_type_id=leave_type.id, start_date=start, end_date=end, days=days, reason=request.form.get("reason", "").strip() or None)
         db.session.add(item)
+        db.session.flush()
+        try:
+            instance = start_workflow(active_workflow("leave"), "leave", item.id, current_user)
+        except ValueError as error:
+            db.session.rollback()
+            flash(str(error))
+            return redirect(url_for("main.leave"))
+        if instance:
+            for decision in instance.decisions:
+                db.session.add(Notification(user_id=decision.approver_id, message=f"{display_name(current_user)} submitted a {leave_type.name} request for your approval."))
         manager = profile.reporting_officer
-        if manager and manager.is_active:
+        if not instance and manager and manager.is_active:
             db.session.add(Notification(user_id=manager.id, message=f"{display_name(current_user)} submitted a {leave_type.name} request for review."))
         db.session.commit()
         flash("Leave request submitted for review.")
@@ -242,6 +254,11 @@ def edit_leave(request_id):
     item.start_date, item.end_date, item.days = start, end, days
     item.reason = request.form.get("reason", "").strip() or None
     item.status, item.reviewer_comment = "submitted", None
+    instance = ApprovalInstance.query.filter_by(subject_type="leave", subject_id=item.id).first()
+    if instance and resubmit_after_more_information(instance):
+        for decision in instance.decisions:
+            if decision.status == "pending":
+                db.session.add(Notification(user_id=decision.approver_id, message=f"{display_name(current_user)} supplied the requested leave information."))
     db.session.add(AuditEvent(actor_id=current_user.id, entity_type="leave_request", entity_id=item.id, action="employee_edited", summary="Employee updated a pending leave request before final review."))
     manager = profile.reporting_officer
     if manager and manager.is_active:
@@ -255,6 +272,8 @@ def edit_leave(request_id):
 @login_required
 def review_leave(request_id, action):
     item = db.get_or_404(LeaveRequest, request_id)
+    if ApprovalInstance.query.filter_by(subject_type="leave", subject_id=item.id, status="pending").first():
+        return "This request must be decided through its configured approval workflow", 409
     permitted = current_user.has_hr_access or (item.user.employee_profile and item.user.employee_profile.reporting_officer_id == current_user.id)
     if not permitted:
         return "Forbidden", 403
@@ -383,17 +402,61 @@ def _leave_review_scope():
 @login_required
 def approvals():
     """One operational inbox for manager leave and HR service decisions."""
-    if not current_user.can_approve_leave:
+    configured_decisions = pending_decisions_for(current_user).all()
+    if not current_user.can_approve_leave and not configured_decisions:
         return "Forbidden", 403
     leave_items = _leave_review_scope().filter(
         LeaveRequest.status.in_(("submitted", "returned", "cancellation_requested")),
     ).all()
+    leave_items = [item for item in leave_items if not ApprovalInstance.query.filter_by(subject_type="leave", subject_id=item.id, status="pending").first()]
     request_items = []
     if current_user.has_hr_access:
         request_items = OtherRequest.query.filter(
             OtherRequest.status.in_(("submitted", "resubmitted", "more_information_required", "in_review", "in_progress")),
         ).order_by(OtherRequest.updated_at.asc()).all()
-    return render_template("approvals.html", leave_items=leave_items, request_items=request_items)
+        request_items = [item for item in request_items if not ApprovalInstance.query.filter_by(subject_type="other_request", subject_id=item.id, status="pending").first()]
+    return render_template("approvals.html", leave_items=leave_items, request_items=request_items, configured_decisions=configured_decisions)
+
+
+@bp.post("/approvals/decision/<int:decision_id>/<action>")
+@login_required
+def approval_decision(decision_id, action):
+    decision = db.get_or_404(ApprovalDecision, decision_id)
+    try:
+        instance, terminal = decide(decision, current_user, action, request.form.get("comment", "").strip())
+    except PermissionError:
+        return "Forbidden", 403
+    except ValueError as error:
+        return str(error), 409
+    subject = db.session.get(LeaveRequest if instance.subject_type == "leave" else OtherRequest, instance.subject_id)
+    if subject is None:
+        return "Approval subject no longer exists", 410
+    if terminal == "approved":
+        if instance.subject_type == "leave":
+            subject.status, subject.approver_id = "approved", current_user.id
+            apply_approved_leave_balance(subject)
+            db.session.flush()
+            try:
+                stored_path, filename = generate_leave_confirmation_pdf(subject)
+                subject.confirmation_stored_path, subject.confirmation_filename = stored_path, filename
+                subject.confirmation_generated_at, subject.confirmation_generation_error = datetime.utcnow(), None
+            except Exception:
+                current_app.logger.exception("Leave confirmation PDF generation failed for leave request %s", subject.id)
+                subject.confirmation_generation_error = "The leave confirmation document could not be generated."
+            db.session.add(Notification(user_id=subject.user_id, message="Your leave request has been approved."))
+        else:
+            subject.status = "in_review"
+            db.session.add(Notification(user_id=subject.user_id, message="Your HR request has passed its approval stage and is now in review."))
+    elif terminal == "rejected":
+        subject.status = "rejected"
+        db.session.add(Notification(user_id=subject.user_id, message="Your request was declined. Please review the approver's comment."))
+    elif terminal == "more_information_required":
+        subject.status = "returned" if instance.subject_type == "leave" else "more_information_required"
+        db.session.add(Notification(user_id=subject.user_id, message="More information is required before your request can proceed."))
+    db.session.add(AuditEvent(actor_id=current_user.id, entity_type=instance.subject_type, entity_id=subject.id, action=f"workflow_{action}", summary=f"Workflow decision recorded in {instance.workflow.name}."))
+    db.session.commit()
+    flash("Approval decision recorded." if terminal else "Decision recorded; the next configured approval stage is now active.")
+    return redirect(url_for("main.approvals"))
 
 
 @bp.route("/admin/leave-balances", methods=["GET", "POST"])
@@ -634,6 +697,55 @@ def profile():
     return render_template("profile.html", profile=profile)
 
 
+@bp.route("/workspace", methods=["GET", "POST"])
+@login_required
+def workspace():
+    """Personal task list and notes, with optional HR-published notices."""
+    if request.method == "POST":
+        action = request.form.get("action")
+        if action == "task-create":
+            title = request.form.get("title", "").strip()
+            if not title or len(title) > 240:
+                flash("Enter a task title of up to 240 characters.")
+            else:
+                due_value = request.form.get("due_at", "").strip()
+                try:
+                    due_at = datetime.fromisoformat(due_value) if due_value else None
+                except ValueError:
+                    flash("Choose a valid task reminder date and time.")
+                    return redirect(url_for("main.workspace"))
+                db.session.add(WorkspaceTask(user_id=current_user.id, title=title, due_at=due_at))
+                db.session.commit(); flash("Task added to your focus list.")
+        elif action in {"task-complete", "task-delete"}:
+            task = db.session.get(WorkspaceTask, request.form.get("task_id", type=int))
+            if task is None or task.user_id != current_user.id:
+                return "Forbidden", 403
+            if action == "task-complete":
+                task.completed_at = None if task.completed_at else datetime.utcnow()
+                db.session.commit(); flash("Task status updated.")
+            else:
+                db.session.delete(task); db.session.commit(); flash("Task removed.")
+        elif action == "note-create":
+            body = request.form.get("body", "").strip()
+            if not body or len(body) > 600:
+                flash("Enter a note of up to 600 characters.")
+            else:
+                is_global = bool(request.form.get("is_global")) and current_user.has_hr_access
+                db.session.add(WorkspaceNote(user_id=current_user.id, body=body, color=request.form.get("color", "gold"), is_global=is_global, show_everywhere=bool(request.form.get("show_everywhere"))))
+                db.session.commit(); flash("Sticky note saved.")
+        elif action == "note-delete":
+            note = db.session.get(WorkspaceNote, request.form.get("note_id", type=int))
+            if note is None or not (note.user_id == current_user.id or current_user.has_hr_access and note.is_global):
+                return "Forbidden", 403
+            db.session.delete(note); db.session.commit(); flash("Sticky note removed.")
+        else:
+            return "Invalid workspace action", 400
+        return redirect(url_for("main.workspace"))
+    tasks = WorkspaceTask.query.filter_by(user_id=current_user.id).order_by(WorkspaceTask.completed_at.isnot(None), WorkspaceTask.due_at.is_(None), WorkspaceTask.due_at, WorkspaceTask.created_at.desc()).all()
+    notes = WorkspaceNote.query.filter((WorkspaceNote.user_id == current_user.id) | (WorkspaceNote.is_global.is_(True))).order_by(WorkspaceNote.created_at.desc()).all()
+    return render_template("workspace.html", tasks=tasks, notes=notes, now=datetime.utcnow())
+
+
 @bp.route("/documents", methods=["GET", "POST"])
 @login_required
 def documents():
@@ -799,6 +911,77 @@ def toggle_designation(designation_id):
     return redirect(url_for("main.designations"))
 
 
+@bp.route("/admin/workflows", methods=["GET", "POST"])
+@login_required
+def workflows():
+    denied = admin_only()
+    if denied:
+        return denied
+    if request.method == "POST":
+        name = request.form.get("name", "").strip()
+        applies_to = request.form.get("applies_to")
+        if not name or applies_to not in {"leave", "other_request"} or ApprovalWorkflow.query.filter_by(name=name).first():
+            flash("Enter a unique workflow name and valid request area.")
+        else:
+            db.session.add(ApprovalWorkflow(name=name, applies_to=applies_to, description=request.form.get("description", "").strip() or None, created_by_id=current_user.id))
+            db.session.commit(); flash("Approval workflow created. Add at least one approval step before activating it.")
+        return redirect(url_for("main.workflows"))
+    return render_template("workflows.html", workflows=ApprovalWorkflow.query.order_by(ApprovalWorkflow.applies_to, ApprovalWorkflow.name).all(), designations=Designation.query.filter_by(is_active=True).order_by(Designation.name).all(), users=User.query.filter_by(is_active=True).order_by(User.username).all(), request_types=_request_types())
+
+
+@bp.post("/admin/workflows/<int:workflow_id>/steps")
+@login_required
+def add_workflow_step(workflow_id):
+    denied = admin_only()
+    if denied:
+        return denied
+    workflow = db.get_or_404(ApprovalWorkflow, workflow_id)
+    kind = request.form.get("approver_kind")
+    designation_id = request.form.get("designation_id", type=int)
+    user_id = request.form.get("approver_user_id", type=int)
+    if kind not in {"designation", "direct_manager", "named_user", "hr_access"}:
+        flash("Choose a valid approver type.")
+    elif kind == "designation" and not db.session.get(Designation, designation_id):
+        flash("Choose an active designation for this approval step.")
+    elif kind == "named_user" and not db.session.get(User, user_id):
+        flash("Choose an active named approver.")
+    else:
+        next_order = max((step.step_order for step in workflow.steps), default=0) + 1
+        db.session.add(ApprovalWorkflowStep(workflow_id=workflow.id, step_order=next_order, approval_mode=request.form.get("approval_mode") if request.form.get("approval_mode") in {"any", "all"} else "any", approver_kind=kind, designation_id=designation_id if kind == "designation" else None, approver_user_id=user_id if kind == "named_user" else None))
+        db.session.commit(); flash("Approval step added.")
+    return redirect(url_for("main.workflows"))
+
+
+@bp.post("/admin/workflows/<int:workflow_id>/toggle")
+@login_required
+def toggle_workflow(workflow_id):
+    denied = admin_only()
+    if denied:
+        return denied
+    workflow = db.get_or_404(ApprovalWorkflow, workflow_id)
+    if not workflow.is_active and not workflow.steps:
+        flash("Add an approval step before activating a workflow.")
+    else:
+        workflow.is_active = not workflow.is_active
+        db.session.commit(); flash("Workflow status updated.")
+    return redirect(url_for("main.workflows"))
+
+
+@bp.post("/admin/request-types")
+@login_required
+def request_types():
+    denied = admin_only()
+    if denied:
+        return denied
+    name = request.form.get("name", "").strip()
+    if not name or RequestType.query.filter_by(name=name).first():
+        flash("Enter a unique service request name.")
+    else:
+        db.session.add(RequestType(name=name, description=request.form.get("description", "").strip() or None, workflow_id=request.form.get("workflow_id", type=int)))
+        db.session.commit(); flash("Service request type added.")
+    return redirect(url_for("main.workflows"))
+
+
 @bp.get("/birthdays")
 @login_required
 def birthdays():
@@ -810,11 +993,16 @@ def birthdays():
     return render_template("birthdays.html", people=people)
 
 
-REQUEST_CATEGORIES = (
+DEFAULT_REQUEST_CATEGORIES = (
     "Salary Certificate", "Employment / Experience Certificate", "Employment Verification Letter",
     "NOC Request", "Salary Transfer Letter", "Personal Information Update",
     "Employee Document Copy Request", "Visa Application Support Letter", "Other HR Request",
 )
+
+
+def _request_types():
+    """The historic catalogue remains readable; new choices are HR-managed records."""
+    return RequestType.query.filter_by(is_active=True).order_by(RequestType.name).all()
 
 
 def _request_access(item):
@@ -825,17 +1013,39 @@ def _request_access(item):
 @login_required
 def other_requests():
     if request.method == "POST":
-        category = request.form.get("category", "")
+        request_type_id = request.form.get("request_type_id", type=int)
+        request_type = db.session.get(RequestType, request_type_id) if request_type_id else None
+        # Compatibility for existing bookmarked forms and historic integrations. The
+        # generated catalogue remains admin-manageable after this one-time mapping.
+        legacy_category = request.form.get("category", "").strip()
+        if request_type is None and legacy_category in DEFAULT_REQUEST_CATEGORIES:
+            request_type = RequestType.query.filter_by(name=legacy_category).first()
+            if request_type is None:
+                request_type = RequestType(name=legacy_category, description="Initial Pointlabs HR service catalogue item.")
+                db.session.add(request_type)
+                db.session.flush()
         details = request.form.get("details", "").strip()
-        if category not in REQUEST_CATEGORIES or not details:
+        if request_type is None or not request_type.is_active or not details:
             flash("Choose a request category and describe what you need.")
             return redirect(url_for("main.other_requests"))
-        item = OtherRequest(user_id=current_user.id, category=category, subject=request.form.get("subject", "").strip() or None, details=details)
+        category = request_type.name
+        item = OtherRequest(user_id=current_user.id, request_type_id=request_type.id, category=category, subject=request.form.get("subject", "").strip() or None, details=details)
         db.session.add(item)
         db.session.flush()
         db.session.add(OtherRequestActivity(other_request_id=item.id, actor_id=current_user.id, activity_type="submitted", message="Request submitted."))
-        for administrator in User.query.filter((User.is_administrator.is_(True)) | (User.role == "hr"), User.is_active.is_(True)).all():
-            db.session.add(Notification(user_id=administrator.id, message=f"New {category} request from {display_name(current_user)}."))
+        workflow = active_workflow("other_request", request_type)
+        try:
+            instance = start_workflow(workflow, "other_request", item.id, current_user)
+        except ValueError as error:
+            db.session.rollback()
+            flash(str(error))
+            return redirect(url_for("main.other_requests"))
+        if instance:
+            for decision in instance.decisions:
+                db.session.add(Notification(user_id=decision.approver_id, message=f"New {category} request from {display_name(current_user)} needs your approval."))
+        else:
+            for administrator in User.query.filter((User.is_administrator.is_(True)) | (User.role == "hr"), User.is_active.is_(True)).all():
+                db.session.add(Notification(user_id=administrator.id, message=f"New {category} request from {display_name(current_user)}."))
         db.session.commit()
         flash("Your request has been submitted to HR.")
         return redirect(url_for("main.other_request_detail", request_id=item.id))
@@ -845,7 +1055,7 @@ def other_requests():
     status = request.args.get("status", "").strip()
     if status:
         query = query.filter_by(status=status)
-    return render_template("other_requests.html", requests=query.paginate(page=max(1, request.args.get("page", 1, type=int)), per_page=10, error_out=False), categories=REQUEST_CATEGORIES, selected_status=status)
+    return render_template("other_requests.html", requests=query.paginate(page=max(1, request.args.get("page", 1, type=int)), per_page=10, error_out=False), categories=_request_types(), selected_status=status)
 
 
 @bp.route("/requests/<int:request_id>", methods=["GET", "POST"])
@@ -863,10 +1073,18 @@ def other_request_detail(request_id):
             if details:
                 item.subject, item.details, item.status = request.form.get("subject", "").strip() or None, details, "resubmitted" if item.status == "more_information_required" else item.status
                 db.session.add(OtherRequestActivity(other_request_id=item.id, actor_id=current_user.id, activity_type="employee_updated", message="Employee updated request details."))
+                instance = ApprovalInstance.query.filter_by(subject_type="other_request", subject_id=item.id).first()
+                if instance and resubmit_after_more_information(instance):
+                    item.status = "submitted"
+                    for decision in instance.decisions:
+                        if decision.status == "pending":
+                            db.session.add(Notification(user_id=decision.approver_id, message=f"{display_name(current_user)} supplied the requested information for {item.category}."))
         elif action == "cancel" and item.user_id == current_user.id and item.status not in {"completed", "cancelled", "rejected"}:
             item.status, item.cancelled_at = "cancelled", datetime.utcnow()
             db.session.add(OtherRequestActivity(other_request_id=item.id, actor_id=current_user.id, activity_type="cancelled", message="Employee cancelled this request."))
         elif current_user.has_hr_access and action in {"in_review", "more_information_required", "in_progress", "completed", "rejected"}:
+            if ApprovalInstance.query.filter_by(subject_type="other_request", subject_id=item.id, status="pending").first():
+                return "This request must be decided through its configured approval workflow", 409
             item.status = action
             db.session.add(OtherRequestActivity(other_request_id=item.id, actor_id=current_user.id, activity_type=action, message=message or action.replace("_", " ").title()))
             db.session.add(Notification(user_id=item.user_id, message="Your request has been updated." if action != "completed" else "Your HR request has been completed."))

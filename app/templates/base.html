@@ -19,6 +19,7 @@
     {% with messages = get_flashed_messages() %}{% if messages %}<div class="toast-stack" aria-live="polite">{% for message in messages %}<div class="toast">{{ message }}</div>{% endfor %}</div>{% endif %}{% endwith %}
     {% block content %}{% endblock %}
   </main>
+  {% if current_user.is_authenticated and workspace_sticky_notes %}<aside class="global-sticky-stack" aria-label="Workspace notes">{% for note in workspace_sticky_notes %}<div class="global-sticky {{ note.color }}">{{ note.body }}</div>{% endfor %}</aside>{% endif %}
   <script src="{{ url_for('static', filename='app.js') }}"></script>
   <script>if('serviceWorker' in navigator) navigator.serviceWorker.register('/static/service-worker.js')</script>
 </body>

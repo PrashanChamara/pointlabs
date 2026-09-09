@@ -168,6 +168,7 @@ class OtherRequest(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
     category = db.Column(db.String(80), nullable=False, index=True)
+    request_type_id = db.Column(db.Integer, db.ForeignKey("request_type.id"), nullable=True, index=True)
     subject = db.Column(db.String(180), nullable=True)
     details = db.Column(db.Text, nullable=False)
     status = db.Column(db.String(40), nullable=False, default="submitted", index=True)
@@ -179,6 +180,73 @@ class OtherRequest(db.Model):
     user = db.relationship("User", foreign_keys=[user_id], backref="other_requests")
     assigned_to = db.relationship("User", foreign_keys=[assigned_to_id])
     completed_document = db.relationship("EmployeeDocument", foreign_keys=[completed_document_id])
+    request_type = db.relationship("RequestType")
+
+
+class RequestType(db.Model):
+    """HR service catalogue owned by HR, never by a hard-coded form list."""
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(120), nullable=False, unique=True)
+    description = db.Column(db.String(500), nullable=True)
+    is_active = db.Column(db.Boolean, nullable=False, default=True, index=True)
+    workflow_id = db.Column(db.Integer, db.ForeignKey("approval_workflow.id"), nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
+
+class ApprovalWorkflow(db.Model):
+    """A reusable, administrator-configured approval route for HR business events."""
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(160), nullable=False, unique=True)
+    applies_to = db.Column(db.String(40), nullable=False, index=True)  # leave or other_request
+    description = db.Column(db.String(500), nullable=True)
+    is_active = db.Column(db.Boolean, nullable=False, default=True, index=True)
+    created_by_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    created_by = db.relationship("User", foreign_keys=[created_by_id])
+    steps = db.relationship("ApprovalWorkflowStep", backref="workflow", order_by="ApprovalWorkflowStep.step_order", cascade="all, delete-orphan")
+
+
+class ApprovalWorkflowStep(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    workflow_id = db.Column(db.Integer, db.ForeignKey("approval_workflow.id"), nullable=False, index=True)
+    step_order = db.Column(db.Integer, nullable=False)
+    # any = any one eligible approver can progress; all = every eligible approver must decide.
+    approval_mode = db.Column(db.String(12), nullable=False, default="any")
+    approver_kind = db.Column(db.String(24), nullable=False, default="designation")
+    designation_id = db.Column(db.Integer, db.ForeignKey("designation.id"), nullable=True)
+    approver_user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+    designation = db.relationship("Designation")
+    approver_user = db.relationship("User", foreign_keys=[approver_user_id])
+    __table_args__ = (db.UniqueConstraint("workflow_id", "step_order", name="uq_approval_workflow_step_order"),)
+
+
+class ApprovalInstance(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    workflow_id = db.Column(db.Integer, db.ForeignKey("approval_workflow.id"), nullable=False, index=True)
+    subject_type = db.Column(db.String(40), nullable=False, index=True)
+    subject_id = db.Column(db.Integer, nullable=False, index=True)
+    requester_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
+    status = db.Column(db.String(30), nullable=False, default="pending", index=True)
+    current_step_order = db.Column(db.Integer, nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    completed_at = db.Column(db.DateTime, nullable=True)
+    workflow = db.relationship("ApprovalWorkflow")
+    requester = db.relationship("User", foreign_keys=[requester_id])
+    decisions = db.relationship("ApprovalDecision", backref="instance", cascade="all, delete-orphan")
+    __table_args__ = (db.UniqueConstraint("subject_type", "subject_id", name="uq_approval_subject"),)
+
+
+class ApprovalDecision(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    approval_instance_id = db.Column(db.Integer, db.ForeignKey("approval_instance.id"), nullable=False, index=True)
+    workflow_step_id = db.Column(db.Integer, db.ForeignKey("approval_workflow_step.id"), nullable=False)
+    approver_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
+    status = db.Column(db.String(32), nullable=False, default="pending", index=True)
+    comment = db.Column(db.Text, nullable=True)
+    acted_at = db.Column(db.DateTime, nullable=True)
+    step = db.relationship("ApprovalWorkflowStep")
+    approver = db.relationship("User", foreign_keys=[approver_id])
+    __table_args__ = (db.UniqueConstraint("approval_instance_id", "workflow_step_id", "approver_id", name="uq_approval_decision"),)
 
 
 class OtherRequestActivity(db.Model):
@@ -222,6 +290,30 @@ class Notification(db.Model):
     message = db.Column(db.String(500), nullable=False)
     is_read = db.Column(db.Boolean, nullable=False, default=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
+
+class WorkspaceTask(db.Model):
+    """A private, lightweight work item owned by one authenticated user."""
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
+    title = db.Column(db.String(240), nullable=False)
+    due_at = db.Column(db.DateTime, nullable=True, index=True)
+    completed_at = db.Column(db.DateTime, nullable=True, index=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    user = db.relationship("User", foreign_keys=[user_id], backref="workspace_tasks")
+
+
+class WorkspaceNote(db.Model):
+    """A note can be personal or deliberately published by HR to every workspace."""
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
+    body = db.Column(db.String(600), nullable=False)
+    color = db.Column(db.String(24), nullable=False, default="gold")
+    is_global = db.Column(db.Boolean, nullable=False, default=False, index=True)
+    show_everywhere = db.Column(db.Boolean, nullable=False, default=False, index=True)
+    expires_at = db.Column(db.DateTime, nullable=True, index=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    user = db.relationship("User", foreign_keys=[user_id], backref="workspace_notes")
 
 
 class DirectMessage(db.Model):

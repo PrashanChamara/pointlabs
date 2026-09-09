@@ -1,4 +1,5 @@
-from flask import Flask
+from flask import Flask, has_request_context
+from flask_login import current_user
 
 from app.config import CONFIGS
 from app.extensions import csrf, db, login_manager, migrate
@@ -31,6 +32,19 @@ def create_app(config_name="development"):
         from app.services.hr import deactivate_resigned_employees
 
         deactivate_resigned_employees()
+
+    @app.context_processor
+    def workspace_context():
+        if not has_request_context() or not current_user.is_authenticated:
+            return {"workspace_sticky_notes": []}
+        from datetime import datetime
+        from app.models.hr import WorkspaceNote
+        notes = WorkspaceNote.query.filter(
+            ((WorkspaceNote.user_id == current_user.id) & (WorkspaceNote.show_everywhere.is_(True))) |
+            (WorkspaceNote.is_global.is_(True)),
+            (WorkspaceNote.expires_at.is_(None)) | (WorkspaceNote.expires_at >= datetime.utcnow()),
+        ).order_by(WorkspaceNote.created_at.desc()).limit(3).all()
+        return {"workspace_sticky_notes": notes}
 
     @app.cli.command("init-db")
     def init_db():

@@ -38,3 +38,14 @@ document.addEventListener('click', (event) => {
 document.addEventListener('keydown', (event) => { if (event.key === 'Escape') closeMenu(); });
 window.addEventListener('resize', () => { if (window.innerWidth > 680) closeMenu(); });
 sidebar?.querySelectorAll('a').forEach((link) => link.addEventListener('click', () => { if (window.innerWidth <= 680) closeMenu(); }));
+
+const liveClock = document.querySelector('[data-live-clock]');
+if (liveClock) {
+  const renderClock = () => {
+    const now = new Date();
+    liveClock.dateTime = now.toISOString();
+    liveClock.textContent = new Intl.DateTimeFormat(undefined, { weekday: 'short', hour: '2-digit', minute: '2-digit' }).format(now);
+  };
+  renderClock();
+  window.setInterval(renderClock, 30_000);
+}

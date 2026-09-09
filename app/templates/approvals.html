@@ -5,6 +5,19 @@
   <div><div class="eyebrow">OPERATIONS INBOX</div><h1>Approvals</h1><p>Review requests assigned to you. Reporting managers decide their direct reports’ leave; HR can process service requests.</p></div>
 </section>
 <section class="approval-grid">
+  {% if configured_decisions %}
+  <article class="panel">
+    <div class="panel-head"><div><span class="section-kicker">CONFIGURED WORKFLOWS</span><h2>{{ configured_decisions|length }} decision{{ '' if configured_decisions|length == 1 else 's' }} assigned to you</h2></div></div>
+    {% for decision in configured_decisions %}
+      <article class="approval-card"><div class="approval-card-head"><div><b>{{ decision.instance.workflow.name }}</b><small>Stage {{ decision.step.step_order }} · {{ decision.instance.subject_type|replace('_', ' ')|title }}</small></div><span class="status submitted">Awaiting you</span></div>
+      <p>Requested by {{ decision.instance.requester.employee_profile.full_name if decision.instance.requester.employee_profile else decision.instance.requester.username }}.</p>
+      <form class="approval-actions" method="post" action="{{ url_for('main.approval_decision', decision_id=decision.id, action='approved') }}"><input name="comment" placeholder="Optional approval note"><button class="primary-action">Approve</button></form>
+      <form class="approval-actions" method="post" action="{{ url_for('main.approval_decision', decision_id=decision.id, action='more_information_required') }}"><input name="comment" required placeholder="What details are needed?"><button class="secondary-action">Need more details</button></form>
+      <form class="approval-actions" method="post" action="{{ url_for('main.approval_decision', decision_id=decision.id, action='rejected') }}"><input name="comment" required placeholder="Reason for declining"><button class="danger-action">Decline</button></form>
+      </article>
+    {% endfor %}
+  </article>
+  {% endif %}
   <article class="panel">
     <div class="panel-head"><div><span class="section-kicker">LEAVE DECISIONS</span><h2>{{ leave_items|length }} awaiting action</h2></div></div>
     {% for item in leave_items %}
