@@ -301,6 +301,7 @@ class WorkspaceTask(db.Model):
     title = db.Column(db.String(240), nullable=False)
     due_at = db.Column(db.DateTime, nullable=True, index=True)
     completed_at = db.Column(db.DateTime, nullable=True, index=True)
+    reminder_sent_at = db.Column(db.DateTime, nullable=True, index=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
     user = db.relationship("User", foreign_keys=[user_id], backref="workspace_tasks")
 

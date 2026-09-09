@@ -60,6 +60,13 @@ def create_app(config_name="development"):
         from app.services.birthdays import process_birthdays as process
         process()
 
+    @app.cli.command("process-reminders")
+    def process_reminders():
+        """Send due workspace-task alarms once; schedule this command every few minutes."""
+        from app.services.reminders import process_due_task_reminders
+        count = process_due_task_reminders()
+        print(f"Processed {count} due task reminder(s).")
+
     @login_manager.user_loader
     def load_user(user_id):
         from app.models.user import User
