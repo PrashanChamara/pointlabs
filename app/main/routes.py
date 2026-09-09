@@ -695,12 +695,27 @@ def profile():
         if conflicting or not _valid_work_email(work_email):
             flash("Enter a unique, valid work email address.")
             return redirect(url_for("main.profile"))
-        profile.preferred_name = request.form.get("preferred_name", "").strip() or None
-        profile.phone = request.form.get("phone", "").strip() or None
-        profile.personal_email = request.form.get("personal_email", "").strip() or None
-        profile.address = request.form.get("address", "").strip() or None
+        safe_updates = {
+            "preferred name": request.form.get("preferred_name", "").strip() or None,
+            "phone": request.form.get("phone", "").strip() or None,
+            "personal email": request.form.get("personal_email", "").strip() or None,
+            "address": request.form.get("address", "").strip() or None,
+            "work email": work_email,
+        }
+        previous = {
+            "preferred name": profile.preferred_name, "phone": profile.phone,
+            "personal email": profile.personal_email, "address": profile.address,
+            "work email": current_user.email,
+        }
+        profile.preferred_name = safe_updates["preferred name"]
+        profile.phone = safe_updates["phone"]
+        profile.personal_email = safe_updates["personal email"]
+        profile.address = safe_updates["address"]
         profile.current_address = profile.address
         current_user.email = work_email
+        changed = [field for field, value in safe_updates.items() if value != previous[field]]
+        if changed:
+            db.session.add(AuditEvent(actor_id=current_user.id, entity_type="employee_profile", entity_id=profile.id, action="self_service_updated", summary=f"Employee updated own profile fields: {', '.join(changed)}."))
         db.session.commit()
         flash("Your profile has been updated.")
         return redirect(url_for("main.profile"))
