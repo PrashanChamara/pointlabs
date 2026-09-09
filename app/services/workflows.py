@@ -23,9 +23,9 @@ def _approvers(step, requester):
         user = step.approver_user
         return [user] if user and user.is_active else []
     if step.approver_kind == "hr_access":
-        return User.query.filter(User.is_active.is_(True)).filter(
-            (User.is_administrator.is_(True)) | (User.role.in_(("admin", "hr")))
-        ).all()
+        return [user for user in User.query.filter_by(is_active=True).all() if user.has_hr_access]
+    if step.approver_kind == "access_role" and step.access_role_id:
+        return User.query.filter_by(access_role_id=step.access_role_id, is_active=True).all()
     if step.designation_id:
         return User.query.join(EmployeeProfile, EmployeeProfile.user_id == User.id).filter(
             User.is_active.is_(True), EmployeeProfile.designation_id == step.designation_id

@@ -215,8 +215,10 @@ class ApprovalWorkflowStep(db.Model):
     approver_kind = db.Column(db.String(24), nullable=False, default="designation")
     designation_id = db.Column(db.Integer, db.ForeignKey("designation.id"), nullable=True)
     approver_user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+    access_role_id = db.Column(db.Integer, db.ForeignKey("access_role.id"), nullable=True)
     designation = db.relationship("Designation")
     approver_user = db.relationship("User", foreign_keys=[approver_user_id])
+    access_role = db.relationship("AccessRole")
     __table_args__ = (db.UniqueConstraint("workflow_id", "step_order", name="uq_approval_workflow_step_order"),)
 
 

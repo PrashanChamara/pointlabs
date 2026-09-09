@@ -30,3 +30,10 @@ class Designation(NamedRecord):
     is_reporting_officer_designation = db.Column(
         db.Boolean, nullable=False, default=False
     )
+
+
+class AccessRole(NamedRecord):
+    """Administrator-managed application access profile, separate from a job title."""
+    grants_hr_access = db.Column(db.Boolean, nullable=False, default=False)
+    can_manage_configuration = db.Column(db.Boolean, nullable=False, default=False)
+    description = db.Column(db.String(400), nullable=True)

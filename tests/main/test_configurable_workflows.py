@@ -83,3 +83,17 @@ def test_more_information_can_be_resubmitted_without_duplicate_route(app):
         db.session.commit()
         assert instance.status == "pending"
         assert ApprovalDecision.query.one().status == "pending"
+
+
+def test_access_role_can_be_selected_as_an_approval_source(app):
+    from app.models.organization import AccessRole
+    with app.app_context():
+        role = AccessRole(name="People approver", grants_hr_access=True)
+        db.session.add(role); db.session.flush()
+        requester, approver = _user("role-requester"), _user("role-approver")
+        approver.access_role_id = role.id
+        flow = ApprovalWorkflow(name="Role-based route", applies_to="leave")
+        db.session.add(flow); db.session.flush()
+        db.session.add(ApprovalWorkflowStep(workflow_id=flow.id, step_order=1, approver_kind="access_role", access_role_id=role.id)); db.session.commit()
+        instance = start_workflow(flow, "leave", 2001, requester); db.session.commit()
+        assert ApprovalDecision.query.filter_by(approval_instance_id=instance.id).one().approver_id == approver.id

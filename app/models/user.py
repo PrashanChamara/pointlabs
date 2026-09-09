@@ -13,11 +13,13 @@ class User(UserMixin, db.Model):
     is_active = db.Column(db.Boolean, nullable=False, default=True)
     is_administrator = db.Column(db.Boolean, nullable=False, default=False)
     role = db.Column(db.String(20), nullable=False, default="employee", index=True)
+    access_role_id = db.Column(db.Integer, db.ForeignKey("access_role.id"), nullable=True, index=True)
     email = db.Column(db.String(255), unique=True, nullable=True)
+    access_role = db.relationship("AccessRole")
 
     @property
     def has_hr_access(self):
-        return self.is_administrator or self.role in {"admin", "hr"}
+        return self.is_administrator or bool(self.access_role and self.access_role.grants_hr_access) or self.role in {"admin", "hr"}
 
     @property
     def can_approve_leave(self):

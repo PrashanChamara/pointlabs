@@ -16,7 +16,7 @@ from app.models.hr import (
     Payslip, PublicHoliday, RequestType, ApprovalWorkflow, ApprovalWorkflowStep,
     ApprovalDecision, ApprovalInstance, WorkspaceNote, WorkspaceTask,
 )
-from app.models.organization import Department, Designation, Entity, Location
+from app.models.organization import AccessRole, Department, Designation, Entity, Location
 from app.models.user import EmployeeProfile, User
 from app.services.email import (
     send_leave_confirmation_email, send_leave_status_email, send_message_email,
@@ -58,6 +58,11 @@ def _active_managers(exclude_user_id=None):
     if exclude_user_id:
         query = query.filter(EmployeeProfile.user_id != exclude_user_id)
     return query.order_by(EmployeeProfile.full_name).all()
+
+
+def _hr_users():
+    """Access roles are evaluated in Python so the same policy applies everywhere."""
+    return [user for user in User.query.filter_by(is_active=True).all() if user.has_hr_access]
 
 
 def _set_profile_from_form(profile):
@@ -573,7 +578,7 @@ def employee_new():
             return redirect(url_for("main.employee_new"))
         # A designation is a job title. Access rights are managed separately on edit
         # by an administrator; reporting-manager assignments drive leave approvals.
-        user = User(username=username, email=email, role="employee", must_change_password=True)
+        user = User(username=username, email=email, access_role_id=request.form.get("access_role_id", type=int), must_change_password=True)
         user.set_password(request.form.get("password") or "ChangeMe123!")
         db.session.add(user)
         db.session.flush()
@@ -599,6 +604,7 @@ def _employee_form_options(user_id=None):
         "locations": Location.query.filter_by(is_active=True).order_by(Location.name).all(),
         "entities": Entity.query.filter_by(is_active=True).order_by(Entity.name).all(),
         "managers": _active_managers(exclude_user_id=user_id),
+        "access_roles": AccessRole.query.filter_by(is_active=True).order_by(AccessRole.name).all(),
     }
 
 
@@ -630,7 +636,7 @@ def employee_edit(user_id):
         employee.email = email
         # Keep administrative access intentional and distinct from designation.
         if current_user.is_administrator:
-            employee.role = "hr" if request.form.get("hr_access") else "employee"
+            employee.access_role_id = request.form.get("access_role_id", type=int)
         try:
             _set_profile_from_form(profile)
             _store_employee_documents(employee, request.files.getlist("documents"), request.form.get("document_category", "Employee record"))
@@ -911,6 +917,23 @@ def toggle_designation(designation_id):
     return redirect(url_for("main.designations"))
 
 
+@bp.route("/admin/access-roles", methods=["GET", "POST"])
+@login_required
+def access_roles():
+    denied = admin_only()
+    if denied:
+        return denied
+    if request.method == "POST":
+        name = request.form.get("name", "").strip()
+        if not name or AccessRole.query.filter_by(name=name).first():
+            flash("Enter a unique access role name.")
+        else:
+            db.session.add(AccessRole(name=name, description=request.form.get("description", "").strip() or None, grants_hr_access=bool(request.form.get("grants_hr_access")), can_manage_configuration=bool(request.form.get("can_manage_configuration"))))
+            db.session.commit(); flash("Access role created.")
+        return redirect(url_for("main.access_roles"))
+    return render_template("access_roles.html", roles=AccessRole.query.order_by(AccessRole.name).all())
+
+
 @bp.route("/admin/workflows", methods=["GET", "POST"])
 @login_required
 def workflows():
@@ -926,7 +949,7 @@ def workflows():
             db.session.add(ApprovalWorkflow(name=name, applies_to=applies_to, description=request.form.get("description", "").strip() or None, created_by_id=current_user.id))
             db.session.commit(); flash("Approval workflow created. Add at least one approval step before activating it.")
         return redirect(url_for("main.workflows"))
-    return render_template("workflows.html", workflows=ApprovalWorkflow.query.order_by(ApprovalWorkflow.applies_to, ApprovalWorkflow.name).all(), designations=Designation.query.filter_by(is_active=True).order_by(Designation.name).all(), users=User.query.filter_by(is_active=True).order_by(User.username).all(), request_types=_request_types())
+    return render_template("workflows.html", workflows=ApprovalWorkflow.query.order_by(ApprovalWorkflow.applies_to, ApprovalWorkflow.name).all(), designations=Designation.query.filter_by(is_active=True).order_by(Designation.name).all(), users=User.query.filter_by(is_active=True).order_by(User.username).all(), access_roles=AccessRole.query.filter_by(is_active=True).order_by(AccessRole.name).all(), request_types=_request_types())
 
 
 @bp.post("/admin/workflows/<int:workflow_id>/steps")
@@ -939,15 +962,18 @@ def add_workflow_step(workflow_id):
     kind = request.form.get("approver_kind")
     designation_id = request.form.get("designation_id", type=int)
     user_id = request.form.get("approver_user_id", type=int)
-    if kind not in {"designation", "direct_manager", "named_user", "hr_access"}:
+    role_id = request.form.get("access_role_id", type=int)
+    if kind not in {"designation", "direct_manager", "named_user", "hr_access", "access_role"}:
         flash("Choose a valid approver type.")
     elif kind == "designation" and not db.session.get(Designation, designation_id):
         flash("Choose an active designation for this approval step.")
     elif kind == "named_user" and not db.session.get(User, user_id):
         flash("Choose an active named approver.")
+    elif kind == "access_role" and not db.session.get(AccessRole, role_id):
+        flash("Choose an active access role for this approval step.")
     else:
         next_order = max((step.step_order for step in workflow.steps), default=0) + 1
-        db.session.add(ApprovalWorkflowStep(workflow_id=workflow.id, step_order=next_order, approval_mode=request.form.get("approval_mode") if request.form.get("approval_mode") in {"any", "all"} else "any", approver_kind=kind, designation_id=designation_id if kind == "designation" else None, approver_user_id=user_id if kind == "named_user" else None))
+        db.session.add(ApprovalWorkflowStep(workflow_id=workflow.id, step_order=next_order, approval_mode=request.form.get("approval_mode") if request.form.get("approval_mode") in {"any", "all"} else "any", approver_kind=kind, designation_id=designation_id if kind == "designation" else None, approver_user_id=user_id if kind == "named_user" else None, access_role_id=role_id if kind == "access_role" else None))
         db.session.commit(); flash("Approval step added.")
     return redirect(url_for("main.workflows"))
 
@@ -1044,7 +1070,7 @@ def other_requests():
             for decision in instance.decisions:
                 db.session.add(Notification(user_id=decision.approver_id, message=f"New {category} request from {display_name(current_user)} needs your approval."))
         else:
-            for administrator in User.query.filter((User.is_administrator.is_(True)) | (User.role == "hr"), User.is_active.is_(True)).all():
+            for administrator in _hr_users():
                 db.session.add(Notification(user_id=administrator.id, message=f"New {category} request from {display_name(current_user)}."))
         db.session.commit()
         flash("Your request has been submitted to HR.")

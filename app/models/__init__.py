@@ -1,4 +1,4 @@
-from app.models.organization import Department, Designation, Entity, Location
+from app.models.organization import AccessRole, Department, Designation, Entity, Location
 from app.models.user import EmployeeProfile, PasswordResetCode, User
 from app.models.hr import (
     AuditEvent, BirthdayVoucher, CompensationRecord, DirectMessage, EmployeeDocument,
@@ -10,6 +10,7 @@ from app.models.hr import (
 
 __all__ = [
     "Department",
+    "AccessRole",
     "Designation",
     "EmployeeProfile",
     "Entity",
