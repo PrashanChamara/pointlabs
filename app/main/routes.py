@@ -947,6 +947,24 @@ def admin_panel():
     )
 
 
+@bp.get("/admin/audit")
+@login_required
+def audit_log():
+    denied = admin_only()
+    if denied:
+        return denied
+    entity_type = request.args.get("entity_type", "").strip()
+    actor_id = request.args.get("actor_id", type=int)
+    query = AuditEvent.query.order_by(AuditEvent.created_at.desc())
+    if entity_type:
+        query = query.filter_by(entity_type=entity_type)
+    if actor_id:
+        query = query.filter_by(actor_id=actor_id)
+    page = query.paginate(page=max(1, request.args.get("page", 1, type=int)), per_page=25, error_out=False)
+    types = [item[0] for item in db.session.query(AuditEvent.entity_type).distinct().order_by(AuditEvent.entity_type).all()]
+    return render_template("audit_log.html", events=page, entity_type=entity_type, actor_id=actor_id, entity_types=types, actors=User.query.filter_by(is_active=True).order_by(User.username).all())
+
+
 @bp.route("/admin/designations", methods=["GET", "POST"])
 @login_required
 def designations():
