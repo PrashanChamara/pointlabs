@@ -18,7 +18,7 @@
     {% if current_user.has_hr_access %}<a class="nav-link" href="{{ url_for('main.reports') }}"><span>▥</span>Reports</a>{% endif %}
     <a class="nav-link" href="{{ url_for('main.leave') }}"><span>◷</span>My leave</a>
     <a class="nav-link" href="{{ url_for('main.payslips') }}"><span>▤</span>My payslips</a>
-    {% if current_user.has_hr_access %}<div class="workspace-label">ADMINISTRATION</div><a class="nav-link" href="{{ url_for('main.admin_panel') }}"><span>⌘</span>Admin panel</a><a class="nav-link" href="{{ url_for('main.workflows') }}"><span>↗</span>Approval workflows</a><a class="nav-link" href="{{ url_for('main.access_roles') }}"><span>◈</span>Access roles</a>{% endif %}
+    {% if current_user.has_hr_access %}<div class="workspace-label">ADMINISTRATION</div><a class="nav-link" href="{{ url_for('main.admin_panel') }}"><span>⌘</span>Admin panel</a>{% if current_user.is_administrator or current_user.access_role and current_user.access_role.can_manage_configuration %}<a class="nav-link" href="{{ url_for('main.workflows') }}"><span>↗</span>Approval workflows</a><a class="nav-link" href="{{ url_for('main.access_roles') }}"><span>◈</span>Access roles</a>{% endif %}{% endif %}
   </nav>
   <div class="sidebar-footer"><a class="account-card" href="{{ url_for('main.profile') }}" title="Open my profile"><span class="avatar avatar-large">{{ current_user.username[:1]|upper }}</span><span><b>{{ current_user.employee_profile.full_name if current_user.employee_profile else current_user.username }}</b><small>{{ 'Administrator' if current_user.is_administrator else 'Employee account' }}</small></span><i>›</i></a><a href="{{ url_for('auth.logout') }}" class="logout">Sign out <span>↗</span></a></div>
 </aside>

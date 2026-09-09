@@ -39,6 +39,10 @@ def admin_only():
     return None if current_user.has_hr_access else ("Forbidden", 403)
 
 
+def configuration_only():
+    return None if current_user.is_administrator or bool(current_user.access_role and current_user.access_role.can_manage_configuration) else ("Forbidden", 403)
+
+
 def _parse_iso_date(field_name):
     value = request.form.get(field_name, "").strip()
     if not value:
@@ -946,7 +950,7 @@ def admin_panel():
 @bp.route("/admin/designations", methods=["GET", "POST"])
 @login_required
 def designations():
-    denied = admin_only()
+    denied = configuration_only()
     if denied:
         return denied
     if request.method == "POST":
@@ -960,7 +964,7 @@ def designations():
 @bp.post("/admin/designations/<int:designation_id>/toggle")
 @login_required
 def toggle_designation(designation_id):
-    denied = admin_only()
+    denied = configuration_only()
     if denied:
         return denied
     item = db.get_or_404(Designation, designation_id); item.is_reporting_officer_designation = not item.is_reporting_officer_designation; db.session.commit()
@@ -970,7 +974,7 @@ def toggle_designation(designation_id):
 @bp.route("/admin/access-roles", methods=["GET", "POST"])
 @login_required
 def access_roles():
-    denied = admin_only()
+    denied = configuration_only()
     if denied:
         return denied
     if request.method == "POST":
@@ -987,7 +991,7 @@ def access_roles():
 @bp.post("/admin/access-roles/<int:role_id>/toggle")
 @login_required
 def toggle_access_role(role_id):
-    denied = admin_only()
+    denied = configuration_only()
     if denied:
         return denied
     role = db.get_or_404(AccessRole, role_id)
@@ -1002,7 +1006,7 @@ def toggle_access_role(role_id):
 @bp.route("/admin/workflows", methods=["GET", "POST"])
 @login_required
 def workflows():
-    denied = admin_only()
+    denied = configuration_only()
     if denied:
         return denied
     if request.method == "POST":
@@ -1020,7 +1024,7 @@ def workflows():
 @bp.post("/admin/workflows/<int:workflow_id>/steps")
 @login_required
 def add_workflow_step(workflow_id):
-    denied = admin_only()
+    denied = configuration_only()
     if denied:
         return denied
     workflow = db.get_or_404(ApprovalWorkflow, workflow_id)
@@ -1046,7 +1050,7 @@ def add_workflow_step(workflow_id):
 @bp.post("/admin/workflows/<int:workflow_id>/toggle")
 @login_required
 def toggle_workflow(workflow_id):
-    denied = admin_only()
+    denied = configuration_only()
     if denied:
         return denied
     workflow = db.get_or_404(ApprovalWorkflow, workflow_id)
@@ -1061,7 +1065,7 @@ def toggle_workflow(workflow_id):
 @bp.post("/admin/request-types")
 @login_required
 def request_types():
-    denied = admin_only()
+    denied = configuration_only()
     if denied:
         return denied
     name = request.form.get("name", "").strip()
@@ -1198,7 +1202,7 @@ def other_request_detail(request_id):
 @bp.route("/admin/master-data/<string:kind>", methods=["GET", "POST"])
 @login_required
 def master_data(kind):
-    denied = admin_only()
+    denied = configuration_only()
     if denied:
         return denied
     models = {"departments": Department, "locations": Location, "entities": Entity}
@@ -1226,7 +1230,7 @@ def master_data(kind):
 @bp.route("/admin/public-holidays", methods=["GET", "POST"])
 @login_required
 def public_holidays():
-    denied = admin_only()
+    denied = configuration_only()
     if denied:
         return denied
     if request.method == "POST":
@@ -1255,7 +1259,7 @@ def public_holidays():
 @bp.post("/admin/public-holidays/<int:holiday_id>/edit")
 @login_required
 def edit_public_holiday(holiday_id):
-    denied = admin_only()
+    denied = configuration_only()
     if denied:
         return denied
     item = db.get_or_404(PublicHoliday, holiday_id)

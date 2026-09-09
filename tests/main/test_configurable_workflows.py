@@ -82,6 +82,19 @@ def test_admin_can_archive_an_access_role_without_deleting_it(client, app):
         assert db.session.get(AccessRole, role_id).is_active is False
 
 
+def test_hr_role_without_configuration_permission_cannot_open_workflow_studio(client, app):
+    from app.models.organization import AccessRole
+    with app.app_context():
+        role = AccessRole(name="Restricted HR", grants_hr_access=True, can_manage_configuration=False)
+        db.session.add(role); db.session.flush()
+        user = _user("restricted-hr")
+        user.access_role_id = role.id
+        db.session.commit()
+        with client.session_transaction() as session:
+            session["_user_id"] = str(user.id); session["_fresh"] = True
+    assert client.get("/admin/workflows").status_code == 403
+
+
 def test_more_information_can_be_resubmitted_without_duplicate_route(app):
     with app.app_context():
         designation = Designation(name="Workflow HR")
