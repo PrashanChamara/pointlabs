@@ -66,6 +66,27 @@ def test_hr_can_open_workflow_studio(client, app):
     assert b"Approval workflows" in response.data
 
 
+def test_workflow_studio_explains_reporting_manager_and_multi_stage_patterns(client, app):
+    with app.app_context():
+        seed_reference_data("admin123")
+        admin = User.query.filter_by(username="admin").one()
+    with client.session_transaction() as session:
+        session["_user_id"] = str(admin.id)
+        session["_fresh"] = True
+    if has_app_context():
+        g.pop("_login_user", None)
+
+    response = client.get("/admin/workflows")
+
+    assert response.status_code == 200
+    assert b"How approval routing works" in response.data
+    assert b"Direct manager" in response.data
+    assert b"the reporting manager selected on the employee record" in response.data
+    assert b"One manager" in response.data
+    assert b"Any one of several approvers" in response.data
+    assert b"Sequential approval" in response.data
+
+
 def test_admin_can_archive_an_access_role_without_deleting_it(client, app):
     from app.models.organization import AccessRole
     with app.app_context():

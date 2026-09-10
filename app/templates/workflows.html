@@ -1,8 +1,84 @@
 {% extends 'base.html' %}
 {% block title %}Workflows · Pointlabs One{% endblock %}
 {% block content %}
-<section class="page-head"><div><div class="eyebrow">AUTOMATION STUDIO</div><h1>Approval workflows</h1><p>Build sequential routes from designations, direct managers, named people or HR. Existing records retain their approval history.</p></div></section>
-<section class="dashboard-grid"><form class="form-card" method="post"><span class="section-kicker">NEW WORKFLOW</span><h2>Create a route</h2><label>Name<input name="name" required placeholder="Annual leave approval"></label><label>Applies to<select name="applies_to"><option value="leave">Leave requests</option><option value="other_request">HR service requests</option></select></label><label>Description<textarea name="description"></textarea></label><button class="primary-action">Create workflow</button></form><form class="form-card" method="post" action="{{ url_for('main.request_types') }}"><span class="section-kicker">SERVICE CATALOGUE</span><h2>Add HR request type</h2><label>Name<input name="name" required placeholder="Travel support letter"></label><label>Description<textarea name="description"></textarea></label><label>Optional approval route<select name="workflow_id"><option value="">Use active HR-service route</option>{% for flow in workflows if flow.applies_to == 'other_request' %}<option value="{{ flow.id }}">{{ flow.name }}</option>{% endfor %}</select></label><button class="secondary-action">Add service type</button></form></section>
-<section class="stack workflow-list">{% for flow in workflows %}<article class="panel"><div class="panel-head"><div><span class="section-kicker">{{ flow.applies_to|replace('_', ' ')|upper }}</span><h2>{{ flow.name }}</h2><p>{{ flow.description or 'No description provided.' }}</p></div><form method="post" action="{{ url_for('main.toggle_workflow', workflow_id=flow.id) }}"><button class="{{ 'primary-action' if not flow.is_active else 'secondary-action' }}">{{ 'Activate' if not flow.is_active else 'Pause' }}</button></form></div><ol class="workflow-steps">{% for step in flow.steps %}<li><b>Stage {{ step.step_order }}</b> · {{ step.approval_mode|title }} approver · {% if step.approver_kind == 'designation' %}{{ step.designation.name }} designation{% elif step.approver_kind == 'direct_manager' %}direct reporting manager{% elif step.approver_kind == 'named_user' %}{{ step.approver_user.username }}{% elif step.approver_kind == 'access_role' %}{{ step.access_role.name }} access role{% else %}any HR administrator{% endif %}</li>{% else %}<li class="muted">No stages yet — this workflow cannot be activated.</li>{% endfor %}</ol><form class="compact-grid workflow-step-form" method="post" action="{{ url_for('main.add_workflow_step', workflow_id=flow.id) }}"><label>Stage rule<select name="approval_mode"><option value="any">Any one approver</option><option value="all">All eligible approvers</option></select></label><label>Approver source<select name="approver_kind"><option value="designation">Designation</option><option value="access_role">Access role</option><option value="direct_manager">Direct manager</option><option value="hr_access">Any HR administrator</option><option value="named_user">Named employee</option></select></label><label>Designation<select name="designation_id"><option value="">Choose if designation source</option>{% for designation in designations %}<option value="{{ designation.id }}">{{ designation.name }}</option>{% endfor %}</select></label><label>Access role<select name="access_role_id"><option value="">Choose if access-role source</option>{% for role in access_roles %}<option value="{{ role.id }}">{{ role.name }}</option>{% endfor %}</select></label><label>Named employee<select name="approver_user_id"><option value="">Choose if named employee source</option>{% for person in users %}<option value="{{ person.id }}">{{ person.employee_profile.full_name if person.employee_profile else person.username }}</option>{% endfor %}</select></label><button class="secondary-action">Add next stage</button></form></article>{% else %}<article class="empty-state"><div class="empty-orb">↗</div><b>No workflows yet</b><p>Create a route, add stages, then activate it.</p></article>{% endfor %}</section>
+<section class="page-head">
+  <div><div class="eyebrow">AUTOMATION STUDIO</div><h1>Approval workflows</h1><p>Build sequential routes from designations, direct managers, named people or HR. Existing records retain their approval history.</p></div>
+</section>
+
+<section class="workflow-explainer" aria-labelledby="workflow-help-title">
+  <div class="workflow-explainer-copy">
+    <span class="section-kicker">START HERE</span>
+    <h2 id="workflow-help-title">How approval routing works</h2>
+    <p>The employee's <b>Reporting manager</b> is selected on the employee record. A workflow stage using <b>Direct manager</b> sends that employee's request to the reporting manager selected on the employee record.</p>
+  </div>
+  <div class="workflow-flow" aria-label="Approval routing sequence">
+    <span><b>1</b> Employee submits</span><i>→</i><span><b>2</b> Stages run in order</span><i>→</i><span><b>3</b> Final result is recorded</span>
+  </div>
+  <div class="workflow-patterns">
+    <article><b>One manager</b><small>Stage 1 · Any one approver · Direct manager</small></article>
+    <article><b>Any one of several approvers</b><small>Stage 1 · Any one approver · Designation or access role</small></article>
+    <article><b>All approvers together</b><small>Stage 1 · All eligible approvers · Designation or access role</small></article>
+    <article><b>Sequential approval</b><small>Stage 1 manager, then add Stage 2 for the next approver</small></article>
+  </div>
+  <div class="workflow-help-note">
+    <b>To match your manager process:</b>
+    <span>Create the supervisor employee first. Create/assign their designation, then select that person as the normal employee's Reporting manager. Create a Leave workflow with Stage 1 set to Direct manager. Create an HR service workflow the same way if Other requests must also go to the manager.</span>
+  </div>
+</section>
+
+<section class="dashboard-grid workflow-create-grid">
+  <form class="form-card" method="post">
+    <span class="section-kicker">NEW WORKFLOW</span><h2>Create a route</h2>
+    <label>Name<input name="name" required placeholder="Example: Leave · Direct manager then HR"><small>Use a name that describes both the request and approval path.</small></label>
+    <label>Applies to<select name="applies_to"><option value="leave">Leave requests</option><option value="other_request">HR service requests</option></select><small>Create separate routes for leave and HR service requests.</small></label>
+    <label>Description<textarea name="description" placeholder="Explain when this route should be used."></textarea></label>
+    <button class="primary-action">Create workflow</button>
+  </form>
+  <form class="form-card" method="post" action="{{ url_for('main.request_types') }}">
+    <span class="section-kicker">SERVICE CATALOGUE</span><h2>Add HR request type</h2>
+    <label>Name<input name="name" required placeholder="Travel support letter"></label>
+    <label>Description<textarea name="description" placeholder="Explain what employees should use this service for."></textarea></label>
+    <label>Optional approval route<select name="workflow_id"><option value="">Use active HR-service route</option>{% for flow in workflows if flow.applies_to == 'other_request' %}<option value="{{ flow.id }}">{{ flow.name }}</option>{% endfor %}</select><small>Select a specific workflow when this service needs a different approval path.</small></label>
+    <button class="secondary-action">Add service type</button>
+  </form>
+</section>
+
+<section class="stack workflow-list">
+{% for flow in workflows %}
+  <article class="panel workflow-card">
+    <div class="panel-head">
+      <div><span class="section-kicker">{{ flow.applies_to|replace('_', ' ')|upper }}</span><h2>{{ flow.name }}</h2><p>{{ flow.description or 'No description provided.' }}</p></div>
+      <form method="post" action="{{ url_for('main.toggle_workflow', workflow_id=flow.id) }}"><button class="{{ 'primary-action' if not flow.is_active else 'secondary-action' }}">{{ 'Activate' if not flow.is_active else 'Pause' }}</button></form>
+    </div>
+    <ol class="workflow-steps">
+    {% for step in flow.steps %}
+      <li><b>Stage {{ step.step_order }}</b><span>{{ 'Any one eligible approver can progress this stage' if step.approval_mode == 'any' else 'Every eligible approver must approve this stage' }}</span><strong>{% if step.approver_kind == 'designation' %}{{ step.designation.name }} designation{% elif step.approver_kind == 'direct_manager' %}Direct manager from the employee record{% elif step.approver_kind == 'named_user' %}Named employee · {{ step.approver_user.username }}{% elif step.approver_kind == 'access_role' %}{{ step.access_role.name }} access role{% else %}Any HR administrator{% endif %}</strong></li>
+    {% else %}
+      <li class="muted"><b>No stages yet</b><span>Add at least one stage below before this workflow can be activated.</span></li>
+    {% endfor %}
+    </ol>
+    <form class="workflow-step-form" method="post" action="{{ url_for('main.add_workflow_step', workflow_id=flow.id) }}">
+      <div class="workflow-step-heading"><span class="section-kicker">NEXT STAGE</span><h3>Add stage {{ flow.steps|length + 1 }}</h3><p>Only the field matching your Approver source is used; the other selector fields may remain blank.</p></div>
+      <div class="compensation-fields two-columns">
+        <label>Stage rule<select name="approval_mode"><option value="any">Any one approver</option><option value="all">All eligible approvers</option></select><small>Any = first approval moves forward. All = everyone resolved for this stage must approve.</small></label>
+        <label>Approver source<select name="approver_kind"><option value="designation">Designation</option><option value="access_role">Access role</option><option value="direct_manager">Direct manager</option><option value="hr_access">Any HR administrator</option><option value="named_user">Named employee</option></select><small>Direct manager uses the Reporting manager saved on each employee record.</small></label>
+        <label>Designation<select name="designation_id"><option value="">Choose only for Designation source</option>{% for designation in designations %}<option value="{{ designation.id }}">{{ designation.name }}</option>{% endfor %}</select></label>
+        <label>Access role<select name="access_role_id"><option value="">Choose only for Access role source</option>{% for role in access_roles %}<option value="{{ role.id }}">{{ role.name }}</option>{% endfor %}</select></label>
+        <label>Named employee<select name="approver_user_id"><option value="">Choose only for Named employee source</option>{% for person in users %}<option value="{{ person.id }}">{{ person.employee_profile.full_name if person.employee_profile else person.username }}</option>{% endfor %}</select></label>
+      </div>
+      <button class="secondary-action">Add next stage</button>
+    </form>
+  </article>
+{% else %}
+  <article class="empty-state"><div class="empty-orb">↗</div><b>No workflows yet</b><p>Create a route, add stages, then activate it.</p></article>
+{% endfor %}
+</section>
+
+<section class="panel workflow-safety-note">
+  <span class="section-kicker">ACTIVE ROUTING</span>
+  <h2>Keep the active path unambiguous</h2>
+  <p>Keep one general leave workflow active. HR request types may select their own specific workflow; otherwise they use the active general HR-service route. Pause an old route after the replacement route is configured and tested.</p>
+</section>
+
 <section class="panel"><span class="section-kicker">ACTIVE SERVICE TYPES</span><div class="chip-row">{% for kind in request_types %}<span class="status approved">{{ kind.name }}</span>{% endfor %}</div></section>
 {% endblock %}

@@ -1,1 +1,131 @@
-{% extends 'base.html' %}{% block title %}Payroll · Pointlabs One{% endblock %}{% block content %}<section class="page-head"><div><div class="eyebrow">PAYROLL WORKSPACE</div><h1>Payroll & compensation</h1><p>Maintain effective-dated compensation, review payroll inputs and generate auditable payslip versions.</p></div><form class="period-picker"><select name="month">{% for value in range(1,13) %}<option value="{{ value }}" {% if value == month %}selected{% endif %}>{{ date(year, value, 1).strftime('%B') }}</option>{% endfor %}</select><input name="year" value="{{ year }}"><button class="secondary-action">View period</button></form></section><section class="panel"><div class="panel-head"><div><span class="section-kicker">{{ month_name|upper }} {{ year }}</span><h2>Eligible employees</h2></div></div><div class="table-wrap"><table class="data-table"><thead><tr><th>EMPLOYEE</th><th>CURRENT COMPENSATION</th><th>PAYSLIP</th><th></th></tr></thead><tbody>{% for profile in profiles %}{% set compensation = profile.user.compensation_records|sort(attribute='effective_date', reverse=true)|first %}<tr><td><b>{{ profile.full_name }}</b><small>{{ profile.employee_code or 'Temporary ID' }}</small></td><td>{% if compensation %}{{ compensation.currency }} {{ '%.2f'|format(compensation.net_salary) }} net{% else %}<span class="status pending">Compensation required</span>{% endif %}</td><td>{% set generated = payslips|selectattr('user_id', 'equalto', profile.user_id)|list %}{% if generated %}<a class="subtle-link" href="{{ url_for('main.payslip_detail', payslip_id=generated[0].id) }}">View v{{ generated[0].version }}</a>{% else %}Not generated{% endif %}</td><td><details><summary class="table-action">Manage</summary><form method="post" action="{{ url_for('main.save_compensation', user_id=profile.user_id) }}" class="compact-grid"><input name="effective_date" type="date" value="{{ '%04d-%02d-01'|format(year, month) }}"><input name="currency" maxlength="3" placeholder="Currency" value="{{ compensation.currency if compensation else 'LKR' }}">{% for field,label in [('basic_salary','Basic'),('allowances','Allowances'),('other_earnings','Other earnings'),('wht','WHT'),('epf','EPF'),('etf','ETF'),('paye','PAYE'),('other_deductions','Other deductions')] %}<input name="{{ field }}" inputmode="decimal" placeholder="{{ label }}" value="{{ compensation[field] if compensation else '0.00' }}">{% endfor %}<button class="secondary-action">Save compensation</button></form><form method="post" action="{{ url_for('main.generate_payslip', user_id=profile.user_id) }}"><input type="hidden" name="year" value="{{ year }}"><input type="hidden" name="month" value="{{ month }}"><button class="primary-action">Generate payslip</button></form></details></td></tr>{% else %}<tr><td colspan="4"><div class="empty-state compact"><b>No eligible employees</b></div></td></tr>{% endfor %}</tbody></table></div></section>{% endblock %}
+{% extends 'base.html' %}
+{% block title %}Payroll · Pointlabs One{% endblock %}
+{% block content %}
+<section class="page-head payroll-head">
+  <div>
+    <div class="eyebrow">PAYROLL WORKSPACE</div>
+    <h1>Payroll & compensation</h1>
+    <p>Maintain effective-dated compensation, review payroll inputs and generate auditable payslip versions.</p>
+  </div>
+  <form class="period-picker" aria-label="Choose payroll period">
+    <label>Payroll month
+      <select name="month">{% for value in range(1,13) %}<option value="{{ value }}" {% if value == month %}selected{% endif %}>{{ date(year, value, 1).strftime('%B') }}</option>{% endfor %}</select>
+    </label>
+    <label>Payroll year
+      <input name="year" type="number" min="2020" max="2100" value="{{ year }}">
+    </label>
+    <button class="secondary-action">View period</button>
+  </form>
+</section>
+
+<section class="payroll-guide" aria-label="Payroll process guide">
+  <article><span>1</span><div><b>Save compensation</b><small>Record the salary structure and the date from which it applies.</small></div></article>
+  <article><span>2</span><div><b>Review the selected month</b><small>The latest salary record effective on or before this month is used.</small></div></article>
+  <article><span>3</span><div><b>Generate the payslip</b><small>Each re-generation creates a new version and keeps the older history.</small></div></article>
+</section>
+
+<section class="panel payroll-panel">
+  <div class="panel-head"><div><span class="section-kicker">{{ month_name|upper }} {{ year }}</span><h2>Eligible employees</h2></div></div>
+  <div class="table-wrap">
+    <table class="data-table payroll-table">
+      <thead><tr><th>EMPLOYEE</th><th>CURRENT COMPENSATION</th><th>PAYSLIP</th><th>ACTION</th></tr></thead>
+      <tbody>
+      {% for profile in profiles %}
+        {% set compensation = compensation_by_user.get(profile.user_id) %}
+        <tr>
+          <td><b>{{ profile.full_name }}</b><small>{{ profile.employee_code or 'Temporary ID' }}</small></td>
+          <td>{% if compensation %}<b>{{ compensation.currency }} {{ '%.2f'|format(compensation.net_salary) }}</b><small>Net salary · effective {{ compensation.effective_date.strftime('%d %b %Y') }}</small>{% else %}<span class="status pending">Compensation required</span>{% endif %}</td>
+          <td>{% set generated = payslips|selectattr('user_id', 'equalto', profile.user_id)|list %}{% if generated %}<a class="subtle-link" href="{{ url_for('main.payslip_detail', payslip_id=generated[0].id) }}">View version {{ generated[0].version }} →</a>{% else %}<span class="muted">Not generated</span>{% endif %}</td>
+          <td>
+            <details class="compensation-drawer">
+              <summary class="table-action">Manage salary</summary>
+              <div class="compensation-editor">
+                <div class="compensation-editor-head">
+                  <div><span class="section-kicker">{{ profile.full_name|upper }}</span><h3>Compensation details</h3></div>
+                  <p>Enter monthly amounts in the selected currency. Save the salary structure before generating the payslip.</p>
+                  <button type="button" class="icon-button compensation-close" onclick="this.closest('details').removeAttribute('open')" aria-label="Close compensation editor">&times;</button>
+                </div>
+                <form method="post" action="{{ url_for('main.save_compensation', user_id=profile.user_id) }}" class="compensation-form">
+                  <div class="compensation-section">
+                    <div class="compensation-section-title"><b>Record timing</b><small>Controls when this salary structure starts being used.</small></div>
+                    <div class="compensation-fields two-columns">
+                      <label>Effective from
+                        <input name="effective_date" type="date" value="{{ '%04d-%02d-01'|format(year, month) }}" required>
+                        <small>The first date this salary structure applies. This is not the employee joining date.</small>
+                      </label>
+                      <label>Currency
+                        <input name="currency" maxlength="3" placeholder="LKR or AED" value="{{ compensation.currency if compensation else 'LKR' }}" required>
+                        <small>Use the three-letter payroll currency, for example LKR or AED.</small>
+                      </label>
+                    </div>
+                  </div>
+
+                  <div class="compensation-section">
+                    <div class="compensation-section-title"><b>Earnings</b><small>Amounts added to gross salary.</small></div>
+                    <div class="compensation-fields three-columns">
+                      <label>Basic salary
+                        <input name="basic_salary" inputmode="decimal" placeholder="0.00" value="{{ compensation.basic_salary if compensation else '0.00' }}" required>
+                        <small>Fixed monthly base salary.</small>
+                      </label>
+                      <label>Allowances
+                        <input name="allowances" inputmode="decimal" placeholder="0.00" value="{{ compensation.allowances if compensation else '0.00' }}" required>
+                        <small>Total regular allowances, such as housing or transport.</small>
+                      </label>
+                      <label>Other earnings
+                        <input name="other_earnings" inputmode="decimal" placeholder="0.00" value="{{ compensation.other_earnings if compensation else '0.00' }}" required>
+                        <small>Approved bonus, overtime, commission or other additions.</small>
+                      </label>
+                    </div>
+                  </div>
+
+                  <div class="compensation-section">
+                    <div class="compensation-section-title"><b>Deductions</b><small>Amounts subtracted when the system calculates net salary.</small></div>
+                    <div class="compensation-fields three-columns">
+                      <label>WHT
+                        <input name="wht" inputmode="decimal" placeholder="0.00" value="{{ compensation.wht if compensation else '0.00' }}" required>
+                        <small>Withholding tax deduction, when applicable.</small>
+                      </label>
+                      <label>EPF
+                        <input name="epf" inputmode="decimal" placeholder="0.00" value="{{ compensation.epf if compensation else '0.00' }}" required>
+                        <small>EPF amount included in payroll deductions.</small>
+                      </label>
+                      <label>ETF
+                        <input name="etf" inputmode="decimal" placeholder="0.00" value="{{ compensation.etf if compensation else '0.00' }}" required>
+                        <small>ETF amount included in the current deduction total.</small>
+                      </label>
+                      <label>PAYE
+                        <input name="paye" inputmode="decimal" placeholder="0.00" value="{{ compensation.paye if compensation else '0.00' }}" required>
+                        <small>Pay-as-you-earn tax deduction, when applicable.</small>
+                      </label>
+                      <label>Other deductions
+                        <input name="other_deductions" inputmode="decimal" placeholder="0.00" value="{{ compensation.other_deductions if compensation else '0.00' }}" required>
+                        <small>Other approved deductions, such as an advance or recovery.</small>
+                      </label>
+                    </div>
+                  </div>
+
+                  <div class="payroll-formula" role="note">
+                    <b>How totals are calculated</b>
+                    <span>Gross salary = basic salary + allowances + other earnings.</span>
+                    <span>Total deductions = WHT + EPF + ETF + PAYE + other deductions.</span>
+                    <span>Net salary = gross salary − total deductions.</span>
+                  </div>
+                  <button class="secondary-action">Save compensation</button>
+                </form>
+                <form method="post" action="{{ url_for('main.generate_payslip', user_id=profile.user_id) }}" class="generate-payslip-form">
+                  <input type="hidden" name="year" value="{{ year }}"><input type="hidden" name="month" value="{{ month }}">
+                  <p><b>Ready to generate?</b><span>Confirm the amounts above were saved and the employee entity/location is correct for the Sri Lanka or UAE template.</span></p>
+                  <button class="primary-action">Generate {{ month_name }} {{ year }} payslip</button>
+                </form>
+              </div>
+            </details>
+          </td>
+        </tr>
+      {% else %}
+        <tr><td colspan="4"><div class="empty-state compact"><b>No eligible employees</b></div></td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

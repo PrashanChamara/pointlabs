@@ -5,7 +5,7 @@ from datetime import date
 from flask import g, has_app_context
 
 from app.extensions import db
-from app.models.hr import LeaveBalanceAdjustment, LeaveRequest, LeaveType, OtherRequest, PublicHoliday
+from app.models.hr import CompensationRecord, LeaveBalanceAdjustment, LeaveRequest, LeaveType, OtherRequest, PublicHoliday
 from app.models.organization import Entity, Location
 from app.models.user import EmployeeProfile, User
 from app.services.hr import leave_days_for_profile
@@ -171,3 +171,47 @@ def test_operational_admin_pages_render_with_the_new_workflows(client, app):
         response = client.get(path)
         assert response.status_code == 200
         assert expected in response.data
+
+
+def test_payroll_management_fields_have_persistent_labels_and_financial_help(client, app):
+    with app.app_context():
+        seed_reference_data("admin123")
+        admin = User.query.filter_by(username="admin").one()
+        sign_in(client, admin)
+
+    response = client.get("/admin/payroll?year=2026&month=9")
+
+    assert response.status_code == 200
+    for label in (
+        b"Effective from",
+        b"Currency",
+        b"Basic salary",
+        b"Allowances",
+        b"Other earnings",
+        b"WHT",
+        b"EPF",
+        b"ETF",
+        b"PAYE",
+        b"Other deductions",
+    ):
+        assert label in response.data
+    assert b"This is not the employee joining date" in response.data
+    assert b"Gross salary = basic salary + allowances + other earnings" in response.data
+
+
+def test_payroll_period_displays_the_compensation_effective_for_that_month(client, app):
+    with app.app_context():
+        seed_reference_data("admin123")
+        admin = User.query.filter_by(username="admin").one()
+        db.session.add_all([
+            CompensationRecord(user_id=admin.id, effective_date=date(2026, 9, 1), currency="LKR", basic_salary=50000, allowances=5000, created_by_id=admin.id),
+            CompensationRecord(user_id=admin.id, effective_date=date(2026, 10, 1), currency="LKR", basic_salary=90000, allowances=5000, created_by_id=admin.id),
+        ])
+        db.session.commit()
+        sign_in(client, admin)
+
+    response = client.get("/admin/payroll?year=2026&month=9")
+
+    assert response.status_code == 200
+    assert b"LKR 55000.00" in response.data
+    assert b"LKR 95000.00" not in response.data

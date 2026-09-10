@@ -1384,8 +1384,13 @@ def payroll():
     if selected_user_id:
         profile_query = profile_query.filter(EmployeeProfile.user_id == selected_user_id)
     profiles = profile_query.order_by(EmployeeProfile.full_name).all()
+    period_start = date(year, month, 1)
+    compensation_by_user = {
+        profile.user_id: _current_compensation(profile.user, period_start)
+        for profile in profiles
+    }
     payslips = Payslip.query.filter_by(payroll_year=year, payroll_month=month).order_by(Payslip.generated_at.desc()).all()
-    return render_template("payroll.html", profiles=profiles, payslips=payslips, year=year, month=month, month_name=date(year, month, 1).strftime("%B"), date=date, selected_user_id=selected_user_id)
+    return render_template("payroll.html", profiles=profiles, payslips=payslips, compensation_by_user=compensation_by_user, year=year, month=month, month_name=period_start.strftime("%B"), date=date, selected_user_id=selected_user_id)
 
 
 @bp.post("/admin/payroll/compensation/<int:user_id>")
