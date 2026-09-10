@@ -34,6 +34,8 @@ def test_login_form_has_a_csrf_token_and_accepts_it_when_enabled(client, app):
     page = client.get("/auth/login")
     assert b"login-layout" in page.data
     assert b"brand-mark" not in page.data
+    assert b"logo-light.png" not in page.data
+    assert b'class="login-brand-product"><b>O</b>ne</span>' in page.data
     token = re.search(rb'name="csrf_token" value="([^"]+)"', page.data).group(1).decode()
     response = client.post("/auth/login", data={"username": "admin", "password": "admin123", "csrf_token": token})
     assert response.status_code == 302

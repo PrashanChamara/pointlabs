@@ -24,7 +24,10 @@ def test_dashboard_uses_time_aware_greeting(client, app):
     assert b'mobile-wordmark' not in response.data
     assert b'data-menu-close' in response.data
     assert b'app-identity' in response.data
-    assert response.data.count(b'brand-logo-frame') == 2
+    assert b'Pointlabs <span><b>O</b>ne</span>' in response.data
+    assert response.data.count(b'class="brand-ring"') == 1
+    assert b'class="brand-name">Pointlabs</span>' in response.data
+    assert b'class="brand-product">One</span>' in response.data
 
 
 def test_dashboard_handles_leap_day_birthdays_in_non_leap_years(client, app):
