@@ -1,4 +1,4 @@
-from flask import Flask, has_request_context
+from flask import Flask, has_request_context, send_from_directory
 from flask_login import current_user
 
 from app.config import CONFIGS
@@ -24,6 +24,13 @@ def create_app(config_name="development"):
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(main_bp)
+
+    @app.get("/service-worker.js")
+    def service_worker():
+        response = send_from_directory(app.static_folder, "service-worker.js", mimetype="application/javascript")
+        response.headers["Service-Worker-Allowed"] = "/"
+        response.headers["Cache-Control"] = "no-cache"
+        return response
 
     @app.before_request
     def apply_effective_resignations():

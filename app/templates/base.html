@@ -19,6 +19,6 @@
   </main>
   {% if current_user.is_authenticated and workspace_sticky_notes %}<aside class="global-sticky-stack" aria-label="Workspace notes">{% for note in workspace_sticky_notes %}<div class="global-sticky {{ note.color }}">{{ note.body }}</div>{% endfor %}</aside>{% endif %}
   <script src="{{ url_for('static', filename='app.js', v='20260909-2') }}"></script>
-  <script>if('serviceWorker' in navigator) navigator.serviceWorker.register('/static/service-worker.js')</script>
+  <script>if('serviceWorker' in navigator) navigator.serviceWorker.register('/service-worker.js')</script>
 </body>
 </html>
