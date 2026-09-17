@@ -251,6 +251,69 @@ class ApprovalDecision(db.Model):
     __table_args__ = (db.UniqueConstraint("approval_instance_id", "workflow_step_id", "approver_id", name="uq_approval_decision"),)
 
 
+class DesignationApprovalCase(db.Model):
+    """Live, simple approval route for a leave or HR-service request.
+
+    Historic ``ApprovalInstance`` records remain untouched.  New cases use the
+    requester's reporting officer first, then allow an approver to refer the
+    request to a designation without exposing a workflow builder to HR users.
+    """
+
+    id = db.Column(db.Integer, primary_key=True)
+    subject_type = db.Column(db.String(40), nullable=False, index=True)
+    subject_id = db.Column(db.Integer, nullable=False, index=True)
+    requester_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
+    status = db.Column(db.String(40), nullable=False, default="pending", index=True)
+    current_designation_id = db.Column(db.Integer, db.ForeignKey("designation.id"), nullable=True)
+    awaiting_response_from_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+    return_to_approver_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    completed_at = db.Column(db.DateTime, nullable=True)
+    requester = db.relationship("User", foreign_keys=[requester_id])
+    current_designation = db.relationship("Designation", foreign_keys=[current_designation_id])
+    awaiting_response_from = db.relationship("User", foreign_keys=[awaiting_response_from_id])
+    return_to_approver = db.relationship("User", foreign_keys=[return_to_approver_id])
+    assignments = db.relationship("DesignationApprovalAssignment", backref="case", cascade="all, delete-orphan")
+    actions = db.relationship("DesignationApprovalAction", backref="case", cascade="all, delete-orphan")
+
+    __table_args__ = (db.UniqueConstraint("subject_type", "subject_id", name="uq_designation_approval_subject"),)
+
+
+class DesignationApprovalAssignment(db.Model):
+    """An actionable assignment; a designation can have multiple holders."""
+
+    id = db.Column(db.Integer, primary_key=True)
+    case_id = db.Column(db.Integer, db.ForeignKey("designation_approval_case.id"), nullable=False, index=True)
+    assignee_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
+    designation_id = db.Column(db.Integer, db.ForeignKey("designation.id"), nullable=True)
+    assigned_by_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+    status = db.Column(db.String(24), nullable=False, default="pending", index=True)
+    assigned_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    acted_at = db.Column(db.DateTime, nullable=True)
+    assignee = db.relationship("User", foreign_keys=[assignee_id])
+    designation = db.relationship("Designation", foreign_keys=[designation_id])
+    assigned_by = db.relationship("User", foreign_keys=[assigned_by_id])
+
+
+class DesignationApprovalAction(db.Model):
+    """Append-only routing/decision record, visible in the approval history."""
+
+    id = db.Column(db.Integer, primary_key=True)
+    case_id = db.Column(db.Integer, db.ForeignKey("designation_approval_case.id"), nullable=False, index=True)
+    actor_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+    action = db.Column(db.String(40), nullable=False, index=True)
+    comment = db.Column(db.Text, nullable=True)
+    from_designation_id = db.Column(db.Integer, db.ForeignKey("designation.id"), nullable=True)
+    to_designation_id = db.Column(db.Integer, db.ForeignKey("designation.id"), nullable=True)
+    target_user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    actor = db.relationship("User", foreign_keys=[actor_id])
+    from_designation = db.relationship("Designation", foreign_keys=[from_designation_id])
+    to_designation = db.relationship("Designation", foreign_keys=[to_designation_id])
+    target_user = db.relationship("User", foreign_keys=[target_user_id])
+
+
 class OtherRequestActivity(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     other_request_id = db.Column(db.Integer, db.ForeignKey("other_request.id"), nullable=False, index=True)

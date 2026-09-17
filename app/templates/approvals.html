@@ -1,51 +1,37 @@
 {% extends 'base.html' %}
 {% block title %}Approvals · Pointlabs One{% endblock %}
 {% block content %}
-<section class="page-head">
-  <div><div class="eyebrow">OPERATIONS INBOX</div><h1>Approvals</h1><p>Review requests assigned to you. Reporting managers decide their direct reports’ leave; HR can process service requests.</p></div>
+<section class="page-head approval-head">
+  <div><div class="eyebrow">DECISION CENTRE</div><h1>Approvals</h1><p>Requests come to the employee’s reporting officer first. Refer a request to another designation, return it with context, or make the final decision.</p></div>
+  <div class="approval-process"><span>1</span><i></i><span>2</span><i></i><span>3</span><small>Reporting officer → designation referral if needed → final decision</small></div>
 </section>
-<section class="approval-grid">
-  {% if configured_decisions %}
-  <article class="panel">
-    <div class="panel-head"><div><span class="section-kicker">CONFIGURED WORKFLOWS</span><h2>{{ configured_decisions|length }} decision{{ '' if configured_decisions|length == 1 else 's' }} assigned to you</h2></div></div>
-    {% for decision in configured_decisions %}
-      <article class="approval-card"><div class="approval-card-head"><div><b>{{ decision.instance.workflow.name }}</b><small>Stage {{ decision.step.step_order }} · {{ decision.instance.subject_type|replace('_', ' ')|title }}</small></div><span class="status submitted">Awaiting you</span></div>
-      <p>Requested by {{ decision.instance.requester.employee_profile.full_name if decision.instance.requester.employee_profile else decision.instance.requester.username }}.</p>
-      <form class="approval-actions" method="post" action="{{ url_for('main.approval_decision', decision_id=decision.id, action='approved') }}"><input name="comment" placeholder="Optional approval note"><button class="primary-action">Approve</button></form>
-      <form class="approval-actions" method="post" action="{{ url_for('main.approval_decision', decision_id=decision.id, action='more_information_required') }}"><input name="comment" required placeholder="What details are needed?"><button class="secondary-action">Need more details</button></form>
-      <form class="approval-actions" method="post" action="{{ url_for('main.approval_decision', decision_id=decision.id, action='rejected') }}"><input name="comment" required placeholder="Reason for declining"><button class="danger-action">Decline</button></form>
+
+<section class="approval-grid approval-grid-modern">
+  <article class="panel approval-queue">
+    <div class="panel-head"><div><span class="section-kicker">ASSIGNED TO YOU</span><h2>{{ approval_cards|length }} decision{{ '' if approval_cards|length == 1 else 's' }} waiting</h2></div></div>
+    {% for card in approval_cards %}
+      {% set item = card.subject %}{% set case = card.case %}
+      <article class="approval-card designation-approval-card">
+        <div class="approval-card-head"><div><span class="request-kind">{{ 'Leave request' if case.subject_type == 'leave' else 'HR request' }}</span><b>{{ item.user.employee_profile.full_name if item.user.employee_profile else item.user.username }}</b><small>{% if case.subject_type == 'leave' %}{{ item.leave_type.name }} · {{ item.start_date.strftime('%d %b %Y') }} – {{ item.end_date.strftime('%d %b %Y') }} · {{ item.days }} working days{% else %}{{ item.category }} · {{ item.subject or 'Open request' }}{% endif %}</small></div><span class="status submitted">Assigned to you</span></div>
+        <p>{% if case.subject_type == 'leave' %}{{ item.reason or 'No additional note supplied.' }}{% else %}{{ item.details }}{% endif %}</p>
+        <div class="approval-context"><span>Current route</span><b>{{ case.current_designation.name if case.current_designation else 'Reporting officer' }}</b><span>·</span><span>{{ case.actions|length }} recorded action{{ '' if case.actions|length == 1 else 's' }}</span></div>
+        <div class="approval-action-grid">
+          <form method="post" action="{{ url_for('main.designation_approval_decision', case_id=case.id, action='approved') }}"><label>Approval note<input name="comment" placeholder="Optional decision note"></label><button class="primary-action">Approve</button></form>
+          <form method="post" action="{{ url_for('main.designation_approval_decision', case_id=case.id, action='refer') }}"><label>Refer to designation<select name="designation_id" required><option value="">Choose designation</option>{% for designation in referral_designations if designation.id != case.current_designation_id %}<option value="{{ designation.id }}">{{ designation.name }}</option>{% endfor %}</select></label><label>Referral comment<input name="comment" required placeholder="Explain what the next approver should review"></label><button class="secondary-action">Refer request</button></form>
+          <form method="post" action="{{ url_for('main.designation_approval_decision', case_id=case.id, action='return_to_requester') }}"><label>Message to employee<input name="comment" required placeholder="State what information is needed"></label><button class="secondary-action">Return to employee</button></form>
+          {% if card.can_return_previous %}<form method="post" action="{{ url_for('main.designation_approval_decision', case_id=case.id, action='return_to_previous') }}"><label>Message to previous approver<input name="comment" required placeholder="State what needs to be reviewed"></label><button class="secondary-action">Return to previous approver</button></form>{% endif %}
+          <form method="post" action="{{ url_for('main.designation_approval_decision', case_id=case.id, action='rejected') }}"><label>Reason for rejection<input name="comment" required placeholder="Explain the decision clearly"></label><button class="danger-action">Reject</button></form>
+        </div>
       </article>
-    {% endfor %}
+    {% else %}<div class="empty-state"><div class="empty-orb">✓</div><b>Your decision queue is clear</b><p>New leave and HR requests assigned to you will appear here.</p></div>{% endfor %}
   </article>
-  {% endif %}
-  <article class="panel">
-    <div class="panel-head"><div><span class="section-kicker">LEAVE DECISIONS</span><h2>{{ leave_items|length }} awaiting action</h2></div></div>
-    {% for item in leave_items %}
-      <article class="approval-card">
-        <div class="approval-card-head"><div><b>{{ item.user.employee_profile.full_name if item.user.employee_profile else item.user.username }}</b><small>{{ item.leave_type.name }} · {{ item.days }} working days</small></div><span class="status {{ item.status }}">{{ item.status|replace('_', ' ')|title }}</span></div>
-        <p>{{ item.start_date.strftime('%d %b %Y') }} — {{ item.end_date.strftime('%d %b %Y') }}{% if item.reason %} · {{ item.reason }}{% endif %}</p>
-        {% if item.status == 'cancellation_requested' %}
-          <form class="approval-actions" method="post" action="{{ url_for('main.review_leave', request_id=item.id, action='approve-cancellation') }}"><button class="primary-action">Approve cancellation</button></form>
-          <form class="approval-actions" method="post" action="{{ url_for('main.review_leave', request_id=item.id, action='reject-cancellation') }}"><button class="secondary-action">Keep approved leave</button></form>
-        {% else %}
-          <form class="approval-actions" method="post" action="{{ url_for('main.review_leave', request_id=item.id, action='approve') }}"><input name="comment" placeholder="Optional approval note"><button class="primary-action">Approve leave</button></form>
-          <form class="approval-actions" method="post" action="{{ url_for('main.review_leave', request_id=item.id, action='return') }}"><input name="comment" required placeholder="What needs clarification?"><button class="secondary-action">Request information</button></form>
-          <form class="approval-actions" method="post" action="{{ url_for('main.review_leave', request_id=item.id, action='reject') }}"><input name="comment" required placeholder="Reason for declining"><button class="danger-action">Decline</button></form>
-        {% endif %}
-      </article>
-    {% else %}
-      <div class="empty-state compact"><div class="empty-orb">✓</div><b>No leave decisions waiting</b><p>New requests assigned to you will appear here.</p></div>
-    {% endfor %}
-  </article>
-  {% if current_user.has_hr_access %}
-  <article class="panel">
-    <div class="panel-head"><div><span class="section-kicker">HR SERVICE DESK</span><h2>{{ request_items|length }} requests in motion</h2></div></div>
-    {% for item in request_items %}
-      <a class="list-row approval-request" href="{{ url_for('main.other_request_detail', request_id=item.id) }}"><div><b>{{ item.category }}</b><small>{{ item.user.employee_profile.full_name if item.user.employee_profile else item.user.username }} · {{ item.subject or 'Open request' }}</small></div><span class="status {{ item.status }}">{{ item.status|replace('_', ' ')|title }}</span><i>›</i></a>
-    {% else %}
-      <div class="empty-state compact"><div class="empty-orb">✓</div><b>No HR service requests waiting</b><p>Completed requests remain available in their employee history.</p></div>
-    {% endfor %}
-  </article>
-  {% endif %}
+
+  <aside class="stack">
+    <article class="panel approval-guide"><span class="section-kicker">HOW THIS WORKS</span><h2>One clear approval path</h2><ol><li><b>Employee submits</b><span>The request goes to their selected reporting officer.</span></li><li><b>Approver decides or refers</b><span>Refer by designation when another leader needs to review it.</span></li><li><b>Every action is recorded</b><span>Comments, referrals and final decisions remain in the request history.</span></li></ol></article>
+    <article class="panel"><div class="panel-head"><div><span class="section-kicker">CANCELLATIONS</span><h2>{{ cancellation_items|length }} leave cancellation{{ '' if cancellation_items|length == 1 else 's' }}</h2></div></div>{% for item in cancellation_items %}<div class="list-row"><div><b>{{ item.user.employee_profile.full_name if item.user.employee_profile else item.user.username }}</b><small>{{ item.leave_type.name }} · {{ item.start_date.strftime('%d %b %Y') }} – {{ item.end_date.strftime('%d %b %Y') }}</small></div><div class="inline-actions"><form method="post" action="{{ url_for('main.review_leave', request_id=item.id, action='approve-cancellation') }}"><button class="secondary-action">Approve</button></form><form method="post" action="{{ url_for('main.review_leave', request_id=item.id, action='reject-cancellation') }}"><button class="text-action">Keep leave</button></form></div></div>{% else %}<div class="empty-state compact"><b>No cancellation decisions</b></div>{% endfor %}</article>
+    {% if direct_leave_items %}<article class="panel"><div class="panel-head"><div><span class="section-kicker">EARLIER DIRECT REQUESTS</span><h2>{{ direct_leave_items|length }} request{{ '' if direct_leave_items|length == 1 else 's' }}</h2></div></div>{% for item in direct_leave_items %}<div class="list-row"><div><b>{{ item.user.employee_profile.full_name if item.user.employee_profile else item.user.username }}</b><small>{{ item.leave_type.name }} · {{ item.start_date.strftime('%d %b %Y') }} – {{ item.end_date.strftime('%d %b %Y') }}</small></div><form method="post" action="{{ url_for('main.review_leave', request_id=item.id, action='approve') }}"><input type="hidden" name="comment" value="Approved from preserved direct-request queue"><button class="secondary-action">Approve</button></form></div>{% endfor %}</article>{% endif %}
+  </aside>
 </section>
+
+{% if legacy_decisions %}<section class="panel legacy-approval-panel"><span class="section-kicker">HISTORIC ROUTES</span><h2>Earlier workflow decisions</h2><p>These requests were created before designation-based approvals were introduced. They remain available so no in-progress history is lost.</p>{% for decision in legacy_decisions %}<div class="list-row"><div><b>{{ decision.instance.subject_type|replace('_', ' ')|title }}</b><small>{{ decision.instance.requester.employee_profile.full_name if decision.instance.requester.employee_profile else decision.instance.requester.username }}</small></div><form class="inline-actions" method="post" action="{{ url_for('main.approval_decision', decision_id=decision.id, action='approved') }}"><input name="comment" placeholder="Optional note"><button class="secondary-action">Approve legacy request</button></form></div>{% endfor %}</section>{% endif %}
 {% endblock %}

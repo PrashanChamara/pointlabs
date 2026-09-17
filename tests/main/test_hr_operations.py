@@ -91,7 +91,7 @@ def test_employee_can_edit_own_hr_request_and_hr_sees_it_in_approvals(client, ap
         seed_reference_data("admin123")
         admin = User.query.filter_by(username="admin").one()
         sign_in(client, admin)
-    employee_id = make_employee(app, "requesteditor")
+    employee_id = make_employee(app, "requesteditor", manager_id=admin.id)
     with app.app_context():
         employee = db.session.get(User, employee_id)
     sign_in(client, employee)
@@ -164,7 +164,7 @@ def test_operational_admin_pages_render_with_the_new_workflows(client, app):
         sign_in(client, admin)
     for path, expected in (
         ("/admin", b"Leave balances"),
-        ("/admin/employees/new", b"Job title & approvals"),
+        ("/admin/employees/new", b"Designation & approvals"),
         ("/admin/public-holidays", b"Holiday calendar"),
         ("/admin/payroll", b"Payroll & compensation"),
     ):

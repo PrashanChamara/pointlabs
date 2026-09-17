@@ -13,8 +13,9 @@ from app.main import bp
 from app.models.hr import (
     AttendanceRecord, AuditEvent, CompensationRecord, DirectMessage, EmployeeDocument, LeaveBalance, LeaveRequest,
     LeaveType, Notification, OtherRequest, OtherRequestActivity, OtherRequestAttachment,
-    Payslip, PublicHoliday, RequestType, ApprovalWorkflow, ApprovalWorkflowStep,
-    ApprovalDecision, ApprovalInstance, WorkspaceNote, WorkspaceTask,
+    Payslip, PublicHoliday, RequestType,
+    ApprovalDecision, ApprovalInstance, DesignationApprovalAssignment,
+    DesignationApprovalCase, WorkspaceNote, WorkspaceTask,
 )
 from app.models.organization import AccessRole, Department, Designation, Entity, Location
 from app.models.user import EmployeeProfile, User
@@ -32,7 +33,11 @@ from app.services.pdf import (
     generate_leave_confirmation_pdf, generate_payslip_pdf, leave_confirmation_pdf_path,
     payslip_pdf_path,
 )
-from app.services.workflows import active_workflow, decide, pending_decisions_for, resubmit_after_more_information, start_workflow
+from app.services.workflows import decide, pending_decisions_for
+from app.services.designation_approvals import (
+    act_on_approval_case, case_for_subject, pending_assignments_for,
+    resubmit_designation_approval, start_designation_approval,
+)
 
 
 def admin_only():
@@ -40,7 +45,7 @@ def admin_only():
 
 
 def configuration_only():
-    return None if current_user.is_administrator or bool(current_user.access_role and current_user.access_role.can_manage_configuration) else ("Forbidden", 403)
+    return None if current_user.can_manage_configuration else ("Forbidden", 403)
 
 
 def _parse_iso_date(field_name):
@@ -58,7 +63,16 @@ def _valid_work_email(email):
 
 
 def _active_managers(exclude_user_id=None):
-    query = EmployeeProfile.query.join(User, EmployeeProfile.user_id == User.id).filter(User.is_active.is_(True))
+    query = EmployeeProfile.query.join(User, EmployeeProfile.user_id == User.id).outerjoin(
+        Designation, EmployeeProfile.designation_id == Designation.id,
+    ).filter(
+        User.is_active.is_(True),
+        or_(
+            User.is_administrator.is_(True),
+            Designation.is_reporting_officer_designation.is_(True),
+            Designation.is_admin_designation.is_(True),
+        ),
+    )
     if exclude_user_id:
         query = query.filter(EmployeeProfile.user_id != exclude_user_id)
     return query.order_by(EmployeeProfile.full_name).all()
@@ -229,17 +243,14 @@ def leave():
         db.session.add(item)
         db.session.flush()
         try:
-            instance = start_workflow(active_workflow("leave"), "leave", item.id, current_user)
+            approval_case = start_designation_approval("leave", item.id, current_user)
         except ValueError as error:
             db.session.rollback()
             flash(str(error))
             return redirect(url_for("main.leave"))
-        if instance:
-            for decision in instance.decisions:
-                db.session.add(Notification(user_id=decision.approver_id, message=f"{display_name(current_user)} submitted a {leave_type.name} request for your approval."))
-        manager = profile.reporting_officer
-        if not instance and manager and manager.is_active:
-            db.session.add(Notification(user_id=manager.id, message=f"{display_name(current_user)} submitted a {leave_type.name} request for review."))
+        for assignment in approval_case.assignments:
+            if assignment.status == "pending":
+                db.session.add(Notification(user_id=assignment.assignee_id, message=f"{display_name(current_user)} submitted a {leave_type.name} request for your approval."))
         db.session.commit()
         flash("Leave request submitted for review.")
         return redirect(url_for("main.leave"))
@@ -291,15 +302,16 @@ def edit_leave(request_id):
     item.start_date, item.end_date, item.days = start, end, days
     item.reason = request.form.get("reason", "").strip() or None
     item.status, item.reviewer_comment = "submitted", None
-    instance = ApprovalInstance.query.filter_by(subject_type="leave", subject_id=item.id).first()
-    if instance and resubmit_after_more_information(instance):
-        for decision in instance.decisions:
-            if decision.status == "pending":
-                db.session.add(Notification(user_id=decision.approver_id, message=f"{display_name(current_user)} supplied the requested leave information."))
+    approval_case = case_for_subject("leave", item.id)
+    if approval_case and resubmit_designation_approval(approval_case, current_user):
+        for assignment in approval_case.assignments:
+            if assignment.status == "pending":
+                db.session.add(Notification(user_id=assignment.assignee_id, message=f"{display_name(current_user)} supplied the requested leave information."))
     db.session.add(AuditEvent(actor_id=current_user.id, entity_type="leave_request", entity_id=item.id, action="employee_edited", summary="Employee updated a pending leave request before final review."))
-    manager = profile.reporting_officer
-    if manager and manager.is_active:
-        db.session.add(Notification(user_id=manager.id, message=f"{display_name(current_user)} updated a {leave_type.name} request for review."))
+    if not approval_case:
+        manager = profile.reporting_officer
+        if manager and manager.is_active:
+            db.session.add(Notification(user_id=manager.id, message=f"{display_name(current_user)} updated a {leave_type.name} request for review."))
     db.session.commit()
     flash("Leave request updated and returned to your reporting manager for review.")
     return redirect(url_for("main.leave"))
@@ -438,21 +450,160 @@ def _leave_review_scope():
 @bp.get("/approvals")
 @login_required
 def approvals():
-    """One operational inbox for manager leave and HR service decisions."""
-    configured_decisions = pending_decisions_for(current_user).all()
-    if not current_user.can_approve_leave and not configured_decisions:
+    """One operational inbox for reporting-officer and designation decisions."""
+    designation_assignments = pending_assignments_for(current_user).all()
+    legacy_decisions = pending_decisions_for(current_user).all()
+    if not current_user.can_approve_requests and not designation_assignments and not legacy_decisions:
         return "Forbidden", 403
-    leave_items = _leave_review_scope().filter(
-        LeaveRequest.status.in_(("submitted", "returned", "cancellation_requested")),
+    cancellation_items = _leave_review_scope().filter(LeaveRequest.status == "cancellation_requested").all()
+    direct_leave_items = _leave_review_scope().filter(
+        LeaveRequest.status.in_(("submitted", "returned")),
     ).all()
-    leave_items = [item for item in leave_items if not ApprovalInstance.query.filter_by(subject_type="leave", subject_id=item.id, status="pending").first()]
-    request_items = []
-    if current_user.has_hr_access:
-        request_items = OtherRequest.query.filter(
-            OtherRequest.status.in_(("submitted", "resubmitted", "more_information_required", "in_review", "in_progress")),
-        ).order_by(OtherRequest.updated_at.asc()).all()
-        request_items = [item for item in request_items if not ApprovalInstance.query.filter_by(subject_type="other_request", subject_id=item.id, status="pending").first()]
-    return render_template("approvals.html", leave_items=leave_items, request_items=request_items, configured_decisions=configured_decisions)
+    direct_leave_items = [
+        item for item in direct_leave_items
+        if not case_for_subject("leave", item.id)
+        and not ApprovalInstance.query.filter_by(subject_type="leave", subject_id=item.id, status="pending").first()
+    ]
+    approval_cards = []
+    for assignment in designation_assignments:
+        case = assignment.case
+        subject = db.session.get(LeaveRequest if case.subject_type == "leave" else OtherRequest, case.subject_id)
+        if subject is not None:
+            approval_cards.append({
+                "assignment": assignment,
+                "case": case,
+                "subject": subject,
+                "can_return_previous": any(
+                    item.assignee_id != current_user.id and item.status in {"completed", "superseded"}
+                    for item in case.assignments
+                ),
+            })
+    return render_template(
+        "approvals.html",
+        approval_cards=approval_cards,
+        legacy_decisions=legacy_decisions,
+        cancellation_items=cancellation_items,
+        direct_leave_items=direct_leave_items,
+        referral_designations=Designation.query.filter_by(is_active=True).order_by(Designation.name).all(),
+    )
+
+
+def _complete_designation_approval(case, action, comment):
+    """Apply a terminal designation decision to its leave/HR business record."""
+    subject_model = LeaveRequest if case.subject_type == "leave" else OtherRequest
+    subject = db.session.get(subject_model, case.subject_id)
+    if subject is None:
+        raise ValueError("The request no longer exists.")
+    if action == "approved":
+        if case.subject_type == "leave":
+            subject.status, subject.approver_id = "approved", current_user.id
+            subject.reviewer_comment = comment or None
+            apply_approved_leave_balance(subject)
+            db.session.flush()
+            try:
+                stored_path, filename = generate_leave_confirmation_pdf(subject)
+                subject.confirmation_stored_path, subject.confirmation_filename = stored_path, filename
+                subject.confirmation_generated_at, subject.confirmation_generation_error = datetime.utcnow(), None
+            except Exception:
+                current_app.logger.exception("Leave confirmation PDF generation failed for leave request %s", subject.id)
+                subject.confirmation_generation_error = "The leave confirmation document could not be generated."
+            db.session.add(Notification(user_id=subject.user_id, message="Your leave request has been approved."))
+        else:
+            subject.status = "in_review"
+            db.session.add(OtherRequestActivity(
+                other_request_id=subject.id, actor_id=current_user.id,
+                activity_type="approval_complete", message="Approval completed; HR service delivery can begin.",
+            ))
+            db.session.add(Notification(user_id=subject.user_id, message="Your HR request has been approved and is now in review."))
+    elif action == "rejected":
+        subject.status = "rejected"
+        if case.subject_type == "leave":
+            subject.reviewer_comment = comment or None
+        else:
+            db.session.add(OtherRequestActivity(
+                other_request_id=subject.id, actor_id=current_user.id,
+                activity_type="rejected", message=comment or "Request rejected.",
+            ))
+        db.session.add(Notification(user_id=subject.user_id, message="Your request was declined. Please review the approver's comment."))
+    elif action == "return_to_requester":
+        subject.status = "returned" if case.subject_type == "leave" else "more_information_required"
+        if case.subject_type == "leave":
+            subject.reviewer_comment = comment or None
+        else:
+            db.session.add(OtherRequestActivity(
+                other_request_id=subject.id, actor_id=current_user.id,
+                activity_type="more_information_required", message=comment,
+            ))
+        db.session.add(Notification(user_id=subject.user_id, message="More information is required before your request can proceed."))
+    db.session.add(AuditEvent(
+        actor_id=current_user.id,
+        entity_type=case.subject_type,
+        entity_id=subject.id,
+        action=f"designation_approval_{action}",
+        summary=f"Designation approval action: {action.replace('_', ' ')}.",
+    ))
+    return subject
+
+
+@bp.post("/approvals/designation/<int:case_id>/<action>")
+@login_required
+def designation_approval_decision(case_id, action):
+    case = db.get_or_404(DesignationApprovalCase, case_id)
+    comment = request.form.get("comment", "").strip()
+    try:
+        result = act_on_approval_case(
+            case,
+            current_user,
+            action,
+            comment,
+            request.form.get("designation_id", type=int),
+        )
+        subject = _complete_designation_approval(case, action, comment) if action in {
+            "approved", "rejected", "return_to_requester",
+        } else None
+    except PermissionError:
+        return "Forbidden", 403
+    except ValueError as error:
+        db.session.rollback()
+        flash(str(error))
+        return redirect(url_for("main.approvals"))
+
+    if action in {"refer", "return_to_previous"}:
+        for assignment in case.assignments:
+            if assignment.status == "pending":
+                db.session.add(Notification(
+                    user_id=assignment.assignee_id,
+                    message=f"A {case.subject_type.replace('_', ' ')} request was referred to you for approval.",
+                ))
+    db.session.commit()
+
+    if action == "approved" and case.subject_type == "leave" and subject and subject.user.email:
+        if subject.confirmation_stored_path:
+            path = leave_confirmation_pdf_path(subject.confirmation_stored_path)
+            if path.is_file() and send_leave_confirmation_email(
+                subject.user.email, display_name(subject.user), subject.leave_type.name,
+                f"{subject.start_date:%d %b %Y} – {subject.end_date:%d %b %Y}", path,
+                subject.confirmation_filename,
+            ):
+                subject.confirmation_emailed_at = datetime.utcnow()
+                db.session.commit()
+        else:
+            send_leave_status_email(subject.user.email, display_name(subject.user), subject.leave_type.name, "approved", comment)
+    elif action in {"rejected", "return_to_requester"} and subject and subject.user.email:
+        send_notice_email(
+            subject.user.email,
+            "Pointlabs One · Request update",
+            "Your request has been updated. Please sign in to Pointlabs One to review the approver's comment.",
+        )
+    labels = {
+        "approved": "Request approved.",
+        "rejected": "Request rejected.",
+        "refer": "Request referred to the selected designation.",
+        "return_to_requester": "Request returned to the employee for more information.",
+        "return_to_previous": "Request returned to the previous approver.",
+    }
+    flash(labels[action])
+    return redirect(url_for("main.approvals"))
 
 
 @bp.post("/approvals/decision/<int:decision_id>/<action>")
@@ -608,9 +759,9 @@ def employee_new():
         if employee_code and EmployeeProfile.query.filter_by(employee_code=employee_code).first():
             flash("That employee code is already in use.")
             return redirect(url_for("main.employee_new"))
-        # A designation is a job title. Access rights are managed separately on edit
-        # by an administrator; reporting-manager assignments drive leave approvals.
-        user = User(username=username, email=email, access_role_id=request.form.get("access_role_id", type=int), must_change_password=True)
+        # A person's designation now governs operational authority; access-role
+        # assignments are retained only for existing historic accounts.
+        user = User(username=username, email=email, must_change_password=True)
         user.set_password(request.form.get("password") or "ChangeMe123!")
         db.session.add(user)
         db.session.flush()
@@ -666,9 +817,6 @@ def employee_edit(user_id):
             flash("Enter a unique, valid work email address.")
             return redirect(url_for("main.employee_edit", user_id=user_id))
         employee.email = email
-        # Keep administrative access intentional and distinct from designation.
-        if current_user.is_administrator:
-            employee.access_role_id = request.form.get("access_role_id", type=int)
         try:
             _set_profile_from_form(profile)
             _store_employee_documents(employee, request.files.getlist("documents"), request.form.get("document_category", "Employee record"))
@@ -979,7 +1127,7 @@ def full_employee_report():
 @bp.get("/admin")
 @login_required
 def admin_panel():
-    denied = admin_only()
+    denied = configuration_only()
     if denied:
         return denied
     return render_template(
@@ -1017,7 +1165,11 @@ def designations():
     if request.method == "POST":
         name = request.form["name"].strip()
         if name and not Designation.query.filter_by(name=name).first():
-            db.session.add(Designation(name=name, is_reporting_officer_designation=bool(request.form.get("reporting")))); db.session.commit()
+            db.session.add(Designation(
+                name=name,
+                is_reporting_officer_designation=bool(request.form.get("reporting")),
+                is_admin_designation=bool(request.form.get("admin")),
+            )); db.session.commit()
         return redirect(url_for("main.designations"))
     return render_template("designations.html", designations=Designation.query.order_by(Designation.name).all())
 
@@ -1029,6 +1181,23 @@ def toggle_designation(designation_id):
     if denied:
         return denied
     item = db.get_or_404(Designation, designation_id); item.is_reporting_officer_designation = not item.is_reporting_officer_designation; db.session.commit()
+    return redirect(url_for("main.designations"))
+
+
+@bp.post("/admin/designations/<int:designation_id>/toggle-admin")
+@login_required
+def toggle_admin_designation(designation_id):
+    denied = configuration_only()
+    if denied:
+        return denied
+    item = db.get_or_404(Designation, designation_id)
+    item.is_admin_designation = not item.is_admin_designation
+    db.session.add(AuditEvent(
+        actor_id=current_user.id, entity_type="designation", entity_id=item.id,
+        action="admin_authority_enabled" if item.is_admin_designation else "admin_authority_removed",
+        summary=f"Admin Centre authority {'enabled for' if item.is_admin_designation else 'removed from'} {item.name}.",
+    ))
+    db.session.commit()
     return redirect(url_for("main.designations"))
 
 
@@ -1070,16 +1239,8 @@ def workflows():
     denied = configuration_only()
     if denied:
         return denied
-    if request.method == "POST":
-        name = request.form.get("name", "").strip()
-        applies_to = request.form.get("applies_to")
-        if not name or applies_to not in {"leave", "other_request"} or ApprovalWorkflow.query.filter_by(name=name).first():
-            flash("Enter a unique workflow name and valid request area.")
-        else:
-            db.session.add(ApprovalWorkflow(name=name, applies_to=applies_to, description=request.form.get("description", "").strip() or None, created_by_id=current_user.id))
-            db.session.commit(); flash("Approval workflow created. Add at least one approval step before activating it.")
-        return redirect(url_for("main.workflows"))
-    return render_template("workflows.html", workflows=ApprovalWorkflow.query.order_by(ApprovalWorkflow.applies_to, ApprovalWorkflow.name).all(), designations=Designation.query.filter_by(is_active=True).order_by(Designation.name).all(), users=User.query.filter_by(is_active=True).order_by(User.username).all(), access_roles=AccessRole.query.filter_by(is_active=True).order_by(AccessRole.name).all(), request_types=_request_types())
+    flash("Workflow Studio is retired. Requests now begin with the employee's reporting officer and can be referred by designation from Approvals.")
+    return redirect(url_for("main.designations"))
 
 
 @bp.post("/admin/workflows/<int:workflow_id>/steps")
@@ -1088,24 +1249,8 @@ def add_workflow_step(workflow_id):
     denied = configuration_only()
     if denied:
         return denied
-    workflow = db.get_or_404(ApprovalWorkflow, workflow_id)
-    kind = request.form.get("approver_kind")
-    designation_id = request.form.get("designation_id", type=int)
-    user_id = request.form.get("approver_user_id", type=int)
-    role_id = request.form.get("access_role_id", type=int)
-    if kind not in {"designation", "direct_manager", "named_user", "hr_access", "access_role"}:
-        flash("Choose a valid approver type.")
-    elif kind == "designation" and not db.session.get(Designation, designation_id):
-        flash("Choose an active designation for this approval step.")
-    elif kind == "named_user" and not db.session.get(User, user_id):
-        flash("Choose an active named approver.")
-    elif kind == "access_role" and not db.session.get(AccessRole, role_id):
-        flash("Choose an active access role for this approval step.")
-    else:
-        next_order = max((step.step_order for step in workflow.steps), default=0) + 1
-        db.session.add(ApprovalWorkflowStep(workflow_id=workflow.id, step_order=next_order, approval_mode=request.form.get("approval_mode") if request.form.get("approval_mode") in {"any", "all"} else "any", approver_kind=kind, designation_id=designation_id if kind == "designation" else None, approver_user_id=user_id if kind == "named_user" else None, access_role_id=role_id if kind == "access_role" else None))
-        db.session.commit(); flash("Approval step added.")
-    return redirect(url_for("main.workflows"))
+    flash("Workflow configuration is retired. Configure supervisor and admin authority on Designations instead.")
+    return redirect(url_for("main.designations"))
 
 
 @bp.post("/admin/workflows/<int:workflow_id>/toggle")
@@ -1114,13 +1259,8 @@ def toggle_workflow(workflow_id):
     denied = configuration_only()
     if denied:
         return denied
-    workflow = db.get_or_404(ApprovalWorkflow, workflow_id)
-    if not workflow.is_active and not workflow.steps:
-        flash("Add an approval step before activating a workflow.")
-    else:
-        workflow.is_active = not workflow.is_active
-        db.session.commit(); flash("Workflow status updated.")
-    return redirect(url_for("main.workflows"))
+    flash("Workflow configuration is retired. Existing workflow records remain preserved for audit history.")
+    return redirect(url_for("main.designations"))
 
 
 @bp.post("/admin/request-types")
@@ -1189,19 +1329,15 @@ def other_requests():
         db.session.add(item)
         db.session.flush()
         db.session.add(OtherRequestActivity(other_request_id=item.id, actor_id=current_user.id, activity_type="submitted", message="Request submitted."))
-        workflow = active_workflow("other_request", request_type)
         try:
-            instance = start_workflow(workflow, "other_request", item.id, current_user)
+            approval_case = start_designation_approval("other_request", item.id, current_user)
         except ValueError as error:
             db.session.rollback()
             flash(str(error))
             return redirect(url_for("main.other_requests"))
-        if instance:
-            for decision in instance.decisions:
-                db.session.add(Notification(user_id=decision.approver_id, message=f"New {category} request from {display_name(current_user)} needs your approval."))
-        else:
-            for administrator in _hr_users():
-                db.session.add(Notification(user_id=administrator.id, message=f"New {category} request from {display_name(current_user)}."))
+        for assignment in approval_case.assignments:
+            if assignment.status == "pending":
+                db.session.add(Notification(user_id=assignment.assignee_id, message=f"New {category} request from {display_name(current_user)} needs your approval."))
         db.session.commit()
         flash("Your request has been submitted to HR.")
         return redirect(url_for("main.other_request_detail", request_id=item.id))
@@ -1229,12 +1365,12 @@ def other_request_detail(request_id):
             if details:
                 item.subject, item.details, item.status = request.form.get("subject", "").strip() or None, details, "resubmitted" if item.status == "more_information_required" else item.status
                 db.session.add(OtherRequestActivity(other_request_id=item.id, actor_id=current_user.id, activity_type="employee_updated", message="Employee updated request details."))
-                instance = ApprovalInstance.query.filter_by(subject_type="other_request", subject_id=item.id).first()
-                if instance and resubmit_after_more_information(instance):
+                approval_case = case_for_subject("other_request", item.id)
+                if approval_case and resubmit_designation_approval(approval_case, current_user):
                     item.status = "submitted"
-                    for decision in instance.decisions:
-                        if decision.status == "pending":
-                            db.session.add(Notification(user_id=decision.approver_id, message=f"{display_name(current_user)} supplied the requested information for {item.category}."))
+                    for assignment in approval_case.assignments:
+                        if assignment.status == "pending":
+                            db.session.add(Notification(user_id=assignment.assignee_id, message=f"{display_name(current_user)} supplied the requested information for {item.category}."))
         elif action == "cancel" and item.user_id == current_user.id and item.status not in {"completed", "cancelled", "rejected"}:
             item.status, item.cancelled_at = "cancelled", datetime.utcnow()
             db.session.add(OtherRequestActivity(other_request_id=item.id, actor_id=current_user.id, activity_type="cancelled", message="Employee cancelled this request."))

@@ -11,19 +11,22 @@ def sign_in(client, user):
         session["_fresh"] = True
 
 
-def make_employee(app):
+def make_employee(app, manager_id=None):
     with app.app_context():
         employee = User(username="mira", email="mira@example.test", must_change_password=False)
         employee.set_password("password")
         db.session.add(employee)
         db.session.flush()
-        db.session.add(EmployeeProfile(user_id=employee.id, full_name="Mira Patel", date_of_joining=date(2025, 1, 1)))
+        db.session.add(EmployeeProfile(user_id=employee.id, full_name="Mira Patel", date_of_joining=date(2025, 1, 1), reporting_officer_id=manager_id))
         db.session.commit()
         return employee.id
 
 
 def test_employee_can_submit_an_other_hr_request(client, app):
-    employee_id = make_employee(app)
+    with app.app_context():
+        seed_reference_data("admin123")
+        manager_id = User.query.filter_by(username="admin").one().id
+    employee_id = make_employee(app, manager_id)
     with app.app_context():
         sign_in(client, db.session.get(User, employee_id))
     response = client.post("/requests", data={"category": "Salary Certificate", "details": "Needed for a bank application."})

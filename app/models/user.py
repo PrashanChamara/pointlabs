@@ -18,12 +18,48 @@ class User(UserMixin, db.Model):
     access_role = db.relationship("AccessRole")
 
     @property
+    def designation(self):
+        return self.employee_profile.designation if self.employee_profile else None
+
+    @property
+    def is_designation_admin(self):
+        return bool(self.designation and self.designation.is_admin_designation)
+
+    @property
+    def is_designation_supervisor(self):
+        return bool(
+            self.designation
+            and (
+                self.designation.is_reporting_officer_designation
+                or self.designation.is_admin_designation
+            )
+        )
+
+    @property
     def has_hr_access(self):
-        return self.is_administrator or bool(self.access_role and self.access_role.grants_hr_access)
+        # Legacy access roles remain recognised for existing accounts, but new
+        # authority is assigned through the employee's designation.
+        return (
+            self.is_administrator
+            or self.is_designation_supervisor
+            or bool(self.access_role and self.access_role.grants_hr_access)
+        )
+
+    @property
+    def can_manage_configuration(self):
+        return (
+            self.is_administrator
+            or self.is_designation_admin
+            or bool(self.access_role and self.access_role.can_manage_configuration)
+        )
+
+    @property
+    def can_approve_requests(self):
+        return self.is_administrator or self.is_designation_supervisor or bool(getattr(self, "direct_reports", []))
 
     @property
     def can_approve_leave(self):
-        return self.has_hr_access or bool(getattr(self, "direct_reports", []))
+        return self.can_approve_requests
 
     def set_password(self, password):
         self.password_hash = generate_password_hash(password)

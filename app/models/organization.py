@@ -30,6 +30,10 @@ class Designation(NamedRecord):
     is_reporting_officer_designation = db.Column(
         db.Boolean, nullable=False, default=False
     )
+    # Job-title authority is intentionally configured here, rather than through
+    # a separate access-role screen.  ``is_reporting_officer_designation`` is
+    # retained as the database-compatible name for the supervisor designation.
+    is_admin_designation = db.Column(db.Boolean, nullable=False, default=False)
 
 
 class AccessRole(NamedRecord):

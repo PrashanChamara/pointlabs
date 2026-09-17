@@ -5,6 +5,7 @@ from app.models.hr import (
     LeaveBalance, LeaveBalanceAdjustment, LeaveRequest, LeaveType, Notification,
     OtherRequest, OtherRequestActivity, OtherRequestAttachment, Payslip, PublicHoliday, RequestType,
     ApprovalWorkflow, ApprovalWorkflowStep, ApprovalInstance, ApprovalDecision,
+    DesignationApprovalAction, DesignationApprovalAssignment, DesignationApprovalCase,
     WorkspaceNote, WorkspaceTask,
 )
 
