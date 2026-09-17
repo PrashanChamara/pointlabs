@@ -164,7 +164,7 @@ def test_operational_admin_pages_render_with_the_new_workflows(client, app):
         sign_in(client, admin)
     for path, expected in (
         ("/admin", b"Leave balances"),
-        ("/admin/employees/new", b"Designation & approvals"),
+        ("/admin/employees/new", b"How approval routing works"),
         ("/admin/public-holidays", b"Holiday calendar"),
         ("/admin/payroll", b"Payroll & compensation"),
     ):
