@@ -1,6 +1,6 @@
 """Tests for the visible HR operations workflows, not only their data models."""
 
-from datetime import date
+from datetime import date, timedelta
 
 from flask import g, has_app_context
 
@@ -8,7 +8,7 @@ from app.extensions import db
 from app.models.hr import CompensationRecord, LeaveBalanceAdjustment, LeaveRequest, LeaveType, OtherRequest, PublicHoliday
 from app.models.organization import Entity, Location
 from app.models.user import EmployeeProfile, User
-from app.services.hr import leave_days_for_profile
+from app.services.hr import deactivate_resigned_employees, leave_days_for_profile
 from app.services.seed import seed_reference_data
 
 
@@ -130,6 +130,9 @@ def test_reporting_manager_can_use_the_approval_inbox_for_direct_report_leave(cl
     response = client.get("/approvals")
     assert response.status_code == 200
     assert b"Directreport" in response.data
+    response = client.get(f"/leave/{request_id}/review")
+    assert response.status_code == 200
+    assert b"EMPLOYEE NOTE" in response.data
     assert client.post(f"/leave/{request_id}/approve", data={"comment": "Approved"}).status_code == 302
     with app.app_context():
         assert db.session.get(LeaveRequest, request_id).status == "approved"
@@ -215,3 +218,63 @@ def test_payroll_period_displays_the_compensation_effective_for_that_month(clien
     assert response.status_code == 200
     assert b"LKR 55000.00" in response.data
     assert b"LKR 95000.00" not in response.data
+
+
+def test_employee_export_contains_the_complete_authorized_staff_record(client, app):
+    with app.app_context():
+        seed_reference_data("admin123")
+        admin = User.query.filter_by(username="admin").one()
+        profile = admin.employee_profile
+        profile.preferred_name = "PL Admin"
+        profile.personal_email = "private@example.test"
+        profile.national_identity_card_number = "NIC-123"
+        profile.bank_account_number = "123456789"
+        profile.employment_type = "Full-time"
+        profile.date_of_joining = date(2024, 1, 15)
+        db.session.commit()
+        sign_in(client, admin)
+
+    response = client.get("/admin/employees/export.csv")
+
+    assert response.status_code == 200
+    assert b"Preferred Name" in response.data
+    assert b"Employment Type" in response.data
+    assert b"National Identity Card Number" in response.data
+    assert b"Bank Account Number" in response.data
+    assert b"PL Admin" in response.data
+    assert b"NIC-123" in response.data
+
+
+def test_directory_supports_optional_operational_columns(client, app):
+    with app.app_context():
+        seed_reference_data("admin123")
+        admin = User.query.filter_by(username="admin").one()
+        admin.employee_profile.date_of_joining = date(2024, 1, 15)
+        db.session.commit()
+        sign_in(client, admin)
+
+    response = client.get("/admin/employees?columns=work_email&columns=date_of_joining")
+
+    assert response.status_code == 200
+    assert b"WORK EMAIL" in response.data
+    assert b"DATE OF JOINING" in response.data
+
+
+def test_effective_resignation_automatically_disables_the_employee_account(app):
+    with app.app_context():
+        user = User(username="departed", must_change_password=False, is_active=True)
+        user.set_password("password")
+        db.session.add(user)
+        db.session.flush()
+        profile = EmployeeProfile(
+            user_id=user.id,
+            full_name="Departed Employee",
+            employment_status="active",
+            resignation_date=date.today() - timedelta(days=1),
+        )
+        db.session.add(profile)
+        db.session.commit()
+
+        assert deactivate_resigned_employees() == 1
+        assert user.is_active is False
+        assert profile.employment_status == "resigned"
