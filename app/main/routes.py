@@ -23,7 +23,7 @@ from app.services.email import (
     send_leave_confirmation_email, send_leave_status_email, send_message_email,
     send_notice_email, send_payslip_email,
 )
-from app.services.files import store_uploaded_file
+from app.services.files import store_profile_photo, store_uploaded_file
 from app.services.hr import (
     adjust_leave_balance, apply_approved_leave_balance, deactivate_resigned_employees,
     get_or_create_leave_balance, leave_days_for_profile, restore_cancelled_leave_balance,
@@ -81,6 +81,35 @@ def _active_managers(exclude_user_id=None):
 def _hr_users():
     """Access roles are evaluated in Python so the same policy applies everywhere."""
     return [user for user in User.query.filter_by(is_active=True).all() if user.has_hr_access]
+
+
+def _email_system_notification_recipients(user_ids, subject, body):
+    """Mirror an in-app operational notification by email after its transaction commits.
+
+    Email delivery is deliberately best-effort: an unavailable SMTP service must never
+    roll back a leave, request, or approval decision that is already safely recorded.
+    """
+    for user_id in set(user_ids):
+        recipient = db.session.get(User, user_id)
+        if recipient and recipient.is_active and recipient.email:
+            send_notice_email(recipient.email, subject, body)
+
+
+def _notify_profile_update_to_admins(actor, change_summary="updated their profile"):
+    """Notify operational administrators without exposing the sensitive changed values."""
+    admin_ids = [
+        user.id for user in User.query.filter_by(is_active=True).all()
+        if user.id != actor.id and (user.is_administrator or user.is_designation_admin)
+    ]
+    message = f"{display_name(actor)} {change_summary}."
+    for admin_id in admin_ids:
+        db.session.add(Notification(user_id=admin_id, message=message))
+    db.session.commit()
+    _email_system_notification_recipients(
+        admin_ids,
+        "Pointlabs One · Profile update",
+        f"{display_name(actor)} {change_summary}. Sign in to Pointlabs One to review the audited change.",
+    )
 
 
 def _set_profile_from_form(profile):
@@ -251,7 +280,13 @@ def leave():
         for assignment in approval_case.assignments:
             if assignment.status == "pending":
                 db.session.add(Notification(user_id=assignment.assignee_id, message=f"{display_name(current_user)} submitted a {leave_type.name} request for your approval."))
+        approval_recipient_ids = [assignment.assignee_id for assignment in approval_case.assignments if assignment.status == "pending"]
         db.session.commit()
+        _email_system_notification_recipients(
+            approval_recipient_ids,
+            "Pointlabs One · Leave approval required",
+            f"{display_name(current_user)} submitted a {leave_type.name} request for your approval. Sign in to Pointlabs One to review it.",
+        )
         flash("Leave request submitted for review.")
         return redirect(url_for("main.leave"))
     balances = [get_or_create_leave_balance(current_user, leave_type) for leave_type in LeaveType.query.filter_by(is_active=True).all()]
@@ -313,6 +348,18 @@ def edit_leave(request_id):
         if manager and manager.is_active:
             db.session.add(Notification(user_id=manager.id, message=f"{display_name(current_user)} updated a {leave_type.name} request for review."))
     db.session.commit()
+    if approval_case:
+        _email_system_notification_recipients(
+            [assignment.assignee_id for assignment in approval_case.assignments if assignment.status == "pending"],
+            "Pointlabs One · Leave request updated",
+            f"{display_name(current_user)} supplied updated information for a {leave_type.name} request. Sign in to review it.",
+        )
+    elif manager and manager.is_active:
+        _email_system_notification_recipients(
+            [manager.id],
+            "Pointlabs One · Leave request updated",
+            f"{display_name(current_user)} updated a {leave_type.name} request for your review.",
+        )
     flash("Leave request updated and returned to your reporting manager for review.")
     return redirect(url_for("main.leave"))
 
@@ -417,6 +464,12 @@ def cancel_leave(request_id):
     if manager and manager.is_active:
         db.session.add(Notification(user_id=manager.id, message=f"{display_name(current_user)} requested cancellation of {item.leave_type.name}."))
     db.session.commit()
+    if manager and manager.is_active:
+        _email_system_notification_recipients(
+            [manager.id],
+            "Pointlabs One · Leave cancellation requested",
+            f"{display_name(current_user)} requested cancellation of an approved {item.leave_type.name} leave request. Sign in to review it.",
+        )
     flash("Cancellation request submitted to your reporting manager.")
     return redirect(url_for("main.leave"))
 
@@ -435,6 +488,21 @@ def download_leave_confirmation(request_id):
         current_app.logger.error("Leave confirmation file is missing for request %s", item.id)
         abort(404)
     return send_from_directory(path.parent, path.name, as_attachment=True, download_name=item.confirmation_filename)
+
+
+@bp.get("/leave/<int:request_id>/review")
+@login_required
+def leave_review_detail(request_id):
+    """A readable leave record before an approver records a decision."""
+    item = db.get_or_404(LeaveRequest, request_id)
+    case = case_for_subject("leave", item.id)
+    is_reporting_manager = bool(item.user.employee_profile and item.user.employee_profile.reporting_officer_id == current_user.id)
+    is_assigned_approver = bool(case and DesignationApprovalAssignment.query.filter_by(
+        case_id=case.id, assignee_id=current_user.id, status="pending",
+    ).first())
+    if not (current_user.has_hr_access or item.user_id == current_user.id or is_reporting_manager or is_assigned_approver):
+        return "Forbidden", 403
+    return render_template("leave_review_detail.html", item=item, approval_case=case)
 
 
 def _leave_review_scope():
@@ -568,6 +636,7 @@ def designation_approval_decision(case_id, action):
         flash(str(error))
         return redirect(url_for("main.approvals"))
 
+    referred_recipient_ids = []
     if action in {"refer", "return_to_previous"}:
         for assignment in case.assignments:
             if assignment.status == "pending":
@@ -575,7 +644,14 @@ def designation_approval_decision(case_id, action):
                     user_id=assignment.assignee_id,
                     message=f"A {case.subject_type.replace('_', ' ')} request was referred to you for approval.",
                 ))
+                referred_recipient_ids.append(assignment.assignee_id)
     db.session.commit()
+    if referred_recipient_ids:
+        _email_system_notification_recipients(
+            referred_recipient_ids,
+            "Pointlabs One · Request referred for approval",
+            f"A {case.subject_type.replace('_', ' ')} request was referred to you for approval. Sign in to Pointlabs One to review it.",
+        )
 
     if action == "approved" and case.subject_type == "leave" and subject and subject.user.email:
         if subject.confirmation_stored_path:
@@ -709,6 +785,16 @@ def employees():
     department_id = request.args.get("department_id", type=int)
     location_id = request.args.get("location_id", type=int)
     status = request.args.get("status", "active")
+    column_options = (
+        ("work_email", "Work email"),
+        ("entity", "Entity"),
+        ("reporting_officer", "Reporting officer"),
+        ("date_of_joining", "Date of joining"),
+        ("employment_type", "Employment type"),
+        ("phone", "Work contact"),
+    )
+    allowed_columns = {key for key, _label in column_options}
+    selected_columns = [key for key in request.args.getlist("columns") if key in allowed_columns]
     page = max(1, request.args.get("page", 1, type=int))
     query = EmployeeProfile.query.join(User, EmployeeProfile.user_id == User.id).order_by(EmployeeProfile.full_name)
     if q:
@@ -734,6 +820,8 @@ def employees():
         selected_department_id=department_id,
         selected_location_id=location_id,
         selected_status=status,
+        column_options=column_options,
+        selected_columns=selected_columns,
     )
 
 
@@ -855,9 +943,41 @@ def employee_export():
     if denied:
         return denied
     stream = StringIO(); writer = csv.writer(stream)
-    writer.writerow(["Employee ID", "Name", "Email", "Designation", "Department", "Location", "Status"])
+    writer.writerow([
+        "Employee Code", "Full Name", "Preferred Name", "User ID", "Official Email",
+        "Personal Email", "Entity", "Location", "Designation", "Department",
+        "Reporting Officer", "Employment Status", "Employment Type", "Date of Joining",
+        "Probation End Date", "Resignation Date", "Date of Birth", "Gender", "Nationality",
+        "Marital Status", "Contact Number", "Home Country Contact Number", "Current Address",
+        "Permanent / Home Country Address", "National Identity Card Number", "Emirates ID Number",
+        "Emirates ID Expiry Date", "Passport Number", "Passport Expiry Date", "Emergency Contact Name",
+        "Emergency Contact Number", "Relationship to Emergency Contact", "Account Holder Name",
+        "Bank Name", "Branch Name", "Bank Account Number", "SWIFT Code", "IFSC Code",
+        "Bank Address", "Bank Currency", "Account Access",
+    ])
+    def display_date(value):
+        return value.strftime("%d/%m/%Y") if value else ""
     for profile in EmployeeProfile.query.order_by(EmployeeProfile.full_name).all():
-        writer.writerow([profile.employee_code or "", profile.full_name, profile.user.email or "", profile.designation.name if profile.designation else "", profile.department.name if profile.department else "", profile.location.name if profile.location else "", "Active" if profile.user.is_active else "Inactive"])
+        writer.writerow([
+            profile.employee_code or "", profile.full_name, profile.preferred_name or "", profile.user.username,
+            profile.user.email or "", profile.personal_email or "", profile.entity.name if profile.entity else "",
+            profile.location.name if profile.location else "", profile.designation.name if profile.designation else "",
+            profile.department.name if profile.department else "",
+            display_name(profile.reporting_officer) if profile.reporting_officer else "",
+            profile.employment_status.replace("_", " ").title(), profile.employment_type or "",
+            display_date(profile.date_of_joining), display_date(profile.probation_end_date),
+            display_date(profile.resignation_date), display_date(profile.date_of_birth), profile.gender or "",
+            profile.nationality or "", profile.marital_status or "", profile.phone or "",
+            profile.home_country_contact_number or "", profile.current_address or profile.address or "",
+            profile.permanent_address or "", profile.national_identity_card_number or "",
+            profile.emirates_id_number or "", display_date(profile.emirates_id_expiry_date),
+            profile.passport_number or "", display_date(profile.passport_expiry_date),
+            profile.emergency_contact_name or "", profile.emergency_contact_number or "",
+            profile.emergency_contact_relationship or "", profile.account_holder_name or "", profile.bank_name or "",
+            profile.branch_name or "", profile.bank_account_number or "", profile.swift_code or "",
+            profile.ifsc_code or "", profile.bank_address or "", profile.bank_currency or "",
+            "Active" if profile.user.is_active else "Inactive",
+        ])
     return send_file(BytesIO(stream.getvalue().encode()), mimetype="text/csv", as_attachment=True, download_name="pointlabs-employees.csv")
 
 
@@ -866,6 +986,24 @@ def employee_export():
 def profile():
     profile = ensure_profile(current_user)
     if request.method == "POST":
+        if request.form.get("action") == "photo":
+            photo = request.files.get("photo")
+            if not photo or not photo.filename:
+                flash("Choose a profile photo to upload.")
+                return redirect(url_for("main.profile"))
+            try:
+                stored_path, mime_type, _size = store_profile_photo(photo, f"profile-{current_user.id}")
+            except ValueError as error:
+                flash(str(error))
+                return redirect(url_for("main.profile"))
+            profile.profile_photo_stored_path = stored_path
+            profile.profile_photo_filename = photo.filename
+            profile.profile_photo_mime_type = mime_type
+            db.session.add(AuditEvent(actor_id=current_user.id, entity_type="employee_profile", entity_id=profile.id, action="profile_photo_updated", summary="Employee updated their profile photo."))
+            db.session.commit()
+            _notify_profile_update_to_admins(current_user, "updated their profile photo")
+            flash("Profile photo updated.")
+            return redirect(url_for("main.profile"))
         work_email = request.form.get("email", "").strip().lower() or None
         conflicting = User.query.filter(User.email == work_email, User.id != current_user.id).first() if work_email else None
         if conflicting or not _valid_work_email(work_email):
@@ -877,11 +1015,25 @@ def profile():
             "personal email": request.form.get("personal_email", "").strip() or None,
             "address": request.form.get("address", "").strip() or None,
             "work email": work_email,
+            "national identity card number": request.form.get("national_identity_card_number", "").strip() or None,
+            "emirates ID number": request.form.get("emirates_id_number", "").strip() or None,
+            "passport number": request.form.get("passport_number", "").strip() or None,
+            "bank account number": request.form.get("bank_account_number", "").strip() or None,
+            "bank name": request.form.get("bank_name", "").strip() or None,
+            "branch name": request.form.get("branch_name", "").strip() or None,
+            "account holder name": request.form.get("account_holder_name", "").strip() or None,
         }
         previous = {
             "preferred name": profile.preferred_name, "phone": profile.phone,
             "personal email": profile.personal_email, "address": profile.address,
             "work email": current_user.email,
+            "national identity card number": profile.national_identity_card_number,
+            "emirates ID number": profile.emirates_id_number,
+            "passport number": profile.passport_number,
+            "bank account number": profile.bank_account_number,
+            "bank name": profile.bank_name,
+            "branch name": profile.branch_name,
+            "account holder name": profile.account_holder_name,
         }
         profile.preferred_name = safe_updates["preferred name"]
         profile.phone = safe_updates["phone"]
@@ -889,13 +1041,34 @@ def profile():
         profile.address = safe_updates["address"]
         profile.current_address = profile.address
         current_user.email = work_email
+        profile.national_identity_card_number = safe_updates["national identity card number"]
+        profile.emirates_id_number = safe_updates["emirates ID number"]
+        profile.passport_number = safe_updates["passport number"]
+        profile.bank_account_number = safe_updates["bank account number"]
+        profile.bank_name = safe_updates["bank name"]
+        profile.branch_name = safe_updates["branch name"]
+        profile.account_holder_name = safe_updates["account holder name"]
         changed = [field for field, value in safe_updates.items() if value != previous[field]]
         if changed:
             db.session.add(AuditEvent(actor_id=current_user.id, entity_type="employee_profile", entity_id=profile.id, action="self_service_updated", summary=f"Employee updated own profile fields: {', '.join(changed)}."))
         db.session.commit()
+        if changed:
+            _notify_profile_update_to_admins(current_user)
         flash("Your profile has been updated.")
         return redirect(url_for("main.profile"))
     return render_template("profile.html", profile=profile)
+
+
+@bp.get("/profile/photo/<int:user_id>")
+@login_required
+def profile_photo(user_id):
+    if user_id != current_user.id and not current_user.has_hr_access:
+        return "Forbidden", 403
+    profile = ensure_profile(db.get_or_404(User, user_id))
+    if not profile.profile_photo_stored_path:
+        abort(404)
+    folder = Path(current_app.instance_path) / "uploads"
+    return send_from_directory(folder, profile.profile_photo_stored_path, mimetype=profile.profile_photo_mime_type or "image/webp")
 
 
 @bp.route("/workspace", methods=["GET", "POST"])
@@ -1044,8 +1217,10 @@ def download_document(document_id):
 @login_required
 def messages():
     peers = User.query.filter(User.id != current_user.id, User.is_active.is_(True)).order_by(User.username).all()
+    system_notifications = Notification.query.filter_by(user_id=current_user.id).order_by(Notification.created_at.desc()).all()
+    show_notifications = request.values.get("view") == "notifications"
     selected_id = request.values.get("recipient_id", type=int)
-    selected = db.session.get(User, selected_id) if selected_id else (peers[0] if peers else None)
+    selected = None if show_notifications else (db.session.get(User, selected_id) if selected_id else (peers[0] if peers else None))
     if selected and selected.id == current_user.id:
         selected = None
     if request.method == "POST":
@@ -1060,13 +1235,20 @@ def messages():
             send_message_email(selected.email, display_name(current_user), body)
         return redirect(url_for("main.messages", recipient_id=selected.id))
     thread = []
+    if show_notifications:
+        for notification in system_notifications:
+            notification.is_read = True
+        db.session.commit()
     if selected:
         thread = DirectMessage.query.filter(or_((DirectMessage.sender_id == current_user.id) & (DirectMessage.recipient_id == selected.id), (DirectMessage.sender_id == selected.id) & (DirectMessage.recipient_id == current_user.id))).order_by(DirectMessage.created_at).all()
         for item in thread:
             if item.recipient_id == current_user.id:
                 item.is_read = True
         db.session.commit()
-    return render_template("messages.html", peers=peers, selected=selected, thread=thread)
+    return render_template(
+        "messages.html", peers=peers, selected=selected, thread=thread,
+        system_notifications=system_notifications, show_notifications=show_notifications,
+    )
 
 
 @bp.get("/reports")
@@ -1338,7 +1520,13 @@ def other_requests():
         for assignment in approval_case.assignments:
             if assignment.status == "pending":
                 db.session.add(Notification(user_id=assignment.assignee_id, message=f"New {category} request from {display_name(current_user)} needs your approval."))
+        approval_recipient_ids = [assignment.assignee_id for assignment in approval_case.assignments if assignment.status == "pending"]
         db.session.commit()
+        _email_system_notification_recipients(
+            approval_recipient_ids,
+            "Pointlabs One · HR request approval required",
+            f"{display_name(current_user)} submitted a {category} request for your approval. Sign in to Pointlabs One to review it.",
+        )
         flash("Your request has been submitted to HR.")
         return redirect(url_for("main.other_request_detail", request_id=item.id))
     query = OtherRequest.query.order_by(OtherRequest.updated_at.desc())
@@ -1359,6 +1547,8 @@ def other_request_detail(request_id):
     if request.method == "POST":
         action = request.form.get("action")
         message = request.form.get("message", "").strip()
+        approval_recipient_ids = []
+        employee_email_notice = None
         employee_editable = item.status in {"draft", "submitted", "more_information_required", "resubmitted"}
         if action == "edit" and item.user_id == current_user.id and employee_editable:
             details = request.form.get("details", "").strip()
@@ -1371,6 +1561,7 @@ def other_request_detail(request_id):
                     for assignment in approval_case.assignments:
                         if assignment.status == "pending":
                             db.session.add(Notification(user_id=assignment.assignee_id, message=f"{display_name(current_user)} supplied the requested information for {item.category}."))
+                            approval_recipient_ids.append(assignment.assignee_id)
         elif action == "cancel" and item.user_id == current_user.id and item.status not in {"completed", "cancelled", "rejected"}:
             item.status, item.cancelled_at = "cancelled", datetime.utcnow()
             db.session.add(OtherRequestActivity(other_request_id=item.id, actor_id=current_user.id, activity_type="cancelled", message="Employee cancelled this request."))
@@ -1381,15 +1572,24 @@ def other_request_detail(request_id):
             db.session.add(OtherRequestActivity(other_request_id=item.id, actor_id=current_user.id, activity_type=action, message=message or action.replace("_", " ").title()))
             db.session.add(Notification(user_id=item.user_id, message="Your request has been updated." if action != "completed" else "Your HR request has been completed."))
             if item.user.email:
-                send_notice_email(item.user.email, "Pointlabs One · Request update", "Your request has been updated." if action != "completed" else "Your HR request has been completed. Visit Pointlabs One to view the details.")
+                employee_email_notice = "Your request has been updated." if action != "completed" else "Your HR request has been completed. Visit Pointlabs One to view the details."
         elif action == "comment" and message:
             internal = bool(request.form.get("internal")) and current_user.has_hr_access
             db.session.add(OtherRequestActivity(other_request_id=item.id, actor_id=current_user.id, activity_type="comment", message=message, is_internal=internal))
             if current_user.has_hr_access and not internal:
                 db.session.add(Notification(user_id=item.user_id, message="HR added an update to your request."))
+                employee_email_notice = "HR added an update to your request. Sign in to Pointlabs One to view it."
         else:
             return "Invalid request action", 409
         db.session.commit()
+        if approval_recipient_ids:
+            _email_system_notification_recipients(
+                approval_recipient_ids,
+                "Pointlabs One · HR request updated",
+                f"{display_name(current_user)} supplied additional information for a {item.category} request. Sign in to review it.",
+            )
+        if employee_email_notice and item.user.email:
+            send_notice_email(item.user.email, "Pointlabs One · Request update", employee_email_notice)
         flash("Request updated.")
         return redirect(url_for("main.other_request_detail", request_id=item.id))
     activities = [activity for activity in item.activities if current_user.has_hr_access or not activity.is_internal]

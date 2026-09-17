@@ -126,6 +126,25 @@ def test_message_is_stored_for_selected_recipient(client, app):
         assert message.body == "Welcome to Pointlabs One."
 
 
+def test_notification_inbox_marks_system_updates_read_when_opened(client, app):
+    with app.app_context():
+        from app.models.hr import Notification
+
+        seed_reference_data("admin123")
+        admin = User.query.filter_by(username="admin").one()
+        db.session.add(Notification(user_id=admin.id, message="A leave request needs your review."))
+        db.session.commit()
+        sign_in(client, admin)
+
+    response = client.get("/messages?view=notifications")
+
+    assert response.status_code == 200
+    assert b"System notifications" in response.data
+    assert b"A leave request needs your review." in response.data
+    with app.app_context():
+        assert all(item.is_read for item in Notification.query.all())
+
+
 def test_approved_leave_can_be_cancelled_without_double_deducting_balance(client, app):
     from datetime import date
     from app.models.hr import LeaveRequest, LeaveType

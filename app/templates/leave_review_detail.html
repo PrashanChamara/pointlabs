@@ -1,0 +1,13 @@
+{% extends 'base.html' %}
+{% block title %}Leave request · Pointlabs One{% endblock %}
+{% block content %}
+<section class="page-head detail-page-head">
+  <div><div class="eyebrow">LEAVE REQUEST</div><h1>{{ item.leave_type.name }}</h1><p>Submitted {{ item.created_at.strftime('%d/%m/%Y') }} · {{ item.status|replace('_', ' ')|title }}</p></div>
+  <div class="head-actions"><a class="secondary-action" href="{{ url_for('main.approvals') }}">Back to approvals</a>{% if item.confirmation_stored_path %}<a class="primary-action" href="{{ url_for('main.download_leave_confirmation', request_id=item.id) }}">Download confirmation</a>{% endif %}</div>
+</section>
+<section class="detail-summary-grid">
+  <article class="panel detail-card"><span class="section-kicker">EMPLOYEE</span><h2>{{ item.user.employee_profile.full_name if item.user.employee_profile else item.user.username }}</h2><dl><div><dt>Employee code</dt><dd>{{ item.user.employee_profile.employee_code if item.user.employee_profile and item.user.employee_profile.employee_code else '—' }}</dd></div><div><dt>Designation</dt><dd>{{ item.user.employee_profile.designation.name if item.user.employee_profile and item.user.employee_profile.designation else '—' }}</dd></div><div><dt>Department</dt><dd>{{ item.user.employee_profile.department.name if item.user.employee_profile and item.user.employee_profile.department else '—' }}</dd></div></dl></article>
+  <article class="panel detail-card"><span class="section-kicker">TIME AWAY</span><h2>{{ item.days }} working day{{ '' if item.days == 1 else 's' }}</h2><dl><div><dt>Start date</dt><dd>{{ item.start_date.strftime('%d/%m/%Y') }}</dd></div><div><dt>End date</dt><dd>{{ item.end_date.strftime('%d/%m/%Y') }}</dd></div><div><dt>Approval status</dt><dd><span class="status {{ item.status }}">{{ item.status|replace('_', ' ')|title }}</span></dd></div></dl></article>
+</section>
+<article class="panel request-note-card"><span class="section-kicker">EMPLOYEE NOTE</span><p>{{ item.reason or 'No additional note was supplied.' }}</p>{% if item.reviewer_comment %}<hr><span class="section-kicker">LATEST APPROVER NOTE</span><p>{{ item.reviewer_comment }}</p>{% endif %}</article>
+{% endblock %}

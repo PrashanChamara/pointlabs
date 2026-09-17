@@ -42,3 +42,14 @@ def store_uploaded_file(file: FileStorage, prefix: str):
     except (UnidentifiedImageError, OSError) as error:
         raise ValueError("The uploaded image is not valid.") from error
     return filename, "image/webp", target.stat().st_size
+
+
+def store_profile_photo(file: FileStorage, prefix: str):
+    """Store a profile portrait using the same private image validation path.
+
+    PDFs are acceptable employee documents but never valid profile photographs.
+    """
+    suffix = Path(file.filename or "").suffix.lower()
+    if suffix not in {".png", ".jpg", ".jpeg", ".webp"}:
+        raise ValueError("Choose a PNG, JPG or WebP profile photo.")
+    return store_uploaded_file(file, prefix)

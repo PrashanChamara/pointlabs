@@ -80,9 +80,9 @@ def test_retired_workflow_bookmark_explains_the_simple_reporting_officer_model(c
     response = client.get("/admin/workflows", follow_redirects=True)
 
     assert response.status_code == 200
-    assert b"Supervisor designation" in response.data
+    assert b"Manager designation" in response.data
     assert b"Admin designation" in response.data
-    assert b"Employee reporting officers are selected" in response.data
+    assert b"Reporting officers are selected from Manager and Admin designations" in response.data
 
 
 def test_admin_can_archive_an_access_role_without_deleting_it(client, app):
