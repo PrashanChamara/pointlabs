@@ -23,7 +23,7 @@ from app.services.email import (
     send_leave_confirmation_email, send_leave_status_email, send_message_email,
     send_notice_email, send_payslip_email,
 )
-from app.services.files import store_profile_photo, store_uploaded_file
+from app.services.files import remove_private_profile_photo, store_profile_photo, store_uploaded_file
 from app.services.hr import (
     adjust_leave_balance, apply_approved_leave_balance, deactivate_resigned_employees,
     get_or_create_leave_balance, leave_days_for_profile, restore_cancelled_leave_balance,
@@ -825,6 +825,26 @@ def employees():
     )
 
 
+@bp.get("/yellow-pages")
+@login_required
+def yellow_pages():
+    """A deliberately contact-only directory for signed-in Pointlabs colleagues."""
+    query = EmployeeProfile.query.join(User, EmployeeProfile.user_id == User.id).filter(User.is_active.is_(True))
+    term = request.args.get("q", "").strip()
+    if term:
+        pattern = f"%{term}%"
+        query = query.outerjoin(Designation, EmployeeProfile.designation_id == Designation.id).outerjoin(
+            Entity, EmployeeProfile.entity_id == Entity.id,
+        ).filter(or_(
+            EmployeeProfile.full_name.ilike(pattern),
+            EmployeeProfile.preferred_name.ilike(pattern),
+            Designation.name.ilike(pattern),
+            Entity.name.ilike(pattern),
+        ))
+    people = query.order_by(EmployeeProfile.full_name).limit(150).all()
+    return render_template("yellow_pages.html", people=people, term=term)
+
+
 @bp.route("/admin/employees/new", methods=["GET", "POST"])
 @login_required
 def employee_new():
@@ -986,6 +1006,20 @@ def employee_export():
 def profile():
     profile = ensure_profile(current_user)
     if request.method == "POST":
+        if request.form.get("action") == "remove_photo":
+            previous_photo = profile.profile_photo_stored_path
+            if not previous_photo:
+                flash("There is no profile photo to remove.")
+                return redirect(url_for("main.profile"))
+            profile.profile_photo_stored_path = None
+            profile.profile_photo_filename = None
+            profile.profile_photo_mime_type = None
+            db.session.add(AuditEvent(actor_id=current_user.id, entity_type="employee_profile", entity_id=profile.id, action="profile_photo_removed", summary="Employee removed their profile photo."))
+            db.session.commit()
+            remove_private_profile_photo(previous_photo)
+            _notify_profile_update_to_admins(current_user, "removed their profile photo")
+            flash("Profile photo removed.")
+            return redirect(url_for("main.profile"))
         if request.form.get("action") == "photo":
             photo = request.files.get("photo")
             if not photo or not photo.filename:
@@ -1619,9 +1653,40 @@ def master_data(kind):
                 item.legal_name = request.form.get("legal_name", "").strip() or None
                 item.country_code = request.form.get("country_code", "").strip().upper() or None
                 item.currency = request.form.get("currency", "").strip().upper() or None
+                item.address = request.form.get("address", "").strip() or None
             db.session.add(item); db.session.commit(); flash("Master record added.")
         return redirect(url_for("main.master_data", kind=kind))
     return render_template("master_data.html", kind=kind, records=model.query.order_by(model.name).all(), entities=Entity.query.filter_by(is_active=True).order_by(Entity.name).all())
+
+
+@bp.post("/admin/master-data/<string:kind>/<int:record_id>/edit")
+@login_required
+def edit_master_data(kind, record_id):
+    denied = configuration_only()
+    if denied:
+        return denied
+    models = {"departments": Department, "locations": Location, "entities": Entity}
+    model = models.get(kind)
+    if model is None:
+        abort(404)
+    item = db.get_or_404(model, record_id)
+    name = request.form.get("name", "").strip()
+    duplicate = model.query.filter(model.id != item.id, model.name == name).first() if name else None
+    if not name or duplicate:
+        flash("Enter a unique name.")
+        return redirect(url_for("main.master_data", kind=kind))
+    item.name = name
+    if model is Location:
+        item.entity_id = request.form.get("entity_id", type=int)
+        item.country_code = request.form.get("country_code", "").strip().upper() or None
+    if model is Entity:
+        item.legal_name = request.form.get("legal_name", "").strip() or None
+        item.country_code = request.form.get("country_code", "").strip().upper() or None
+        item.currency = request.form.get("currency", "").strip().upper() or None
+        item.address = request.form.get("address", "").strip() or None
+    db.session.commit()
+    flash("Master record updated.")
+    return redirect(url_for("main.master_data", kind=kind))
 
 
 @bp.route("/admin/public-holidays", methods=["GET", "POST"])
