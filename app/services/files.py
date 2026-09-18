@@ -53,3 +53,14 @@ def store_profile_photo(file: FileStorage, prefix: str):
     if suffix not in {".png", ".jpg", ".jpeg", ".webp"}:
         raise ValueError("Choose a PNG, JPG or WebP profile photo.")
     return store_uploaded_file(file, prefix)
+
+
+def remove_private_profile_photo(stored_name: str | None):
+    """Remove a private portrait without accepting an arbitrary filesystem path."""
+    if not stored_name or Path(stored_name).name != stored_name:
+        return
+    target = Path(current_app.instance_path) / "uploads" / stored_name
+    try:
+        target.unlink(missing_ok=True)
+    except OSError:
+        current_app.logger.warning("Could not remove private profile photo: %s", stored_name)
