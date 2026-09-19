@@ -1090,7 +1090,22 @@ def profile():
             _notify_profile_update_to_admins(current_user)
         flash("Your profile has been updated.")
         return redirect(url_for("main.profile"))
-    return render_template("profile.html", profile=profile)
+    reporting_officer = profile.reporting_officer
+    reporting_officer_holders = []
+    if reporting_officer and reporting_officer.employee_profile:
+        officer_designation_id = reporting_officer.employee_profile.designation_id
+        if officer_designation_id:
+            reporting_officer_holders = EmployeeProfile.query.join(
+                User, EmployeeProfile.user_id == User.id,
+            ).filter(
+                EmployeeProfile.designation_id == officer_designation_id,
+                User.is_active.is_(True),
+            ).order_by(EmployeeProfile.full_name).all()
+    return render_template(
+        "profile.html",
+        profile=profile,
+        reporting_officer_holders=reporting_officer_holders,
+    )
 
 
 @bp.get("/profile/photo/<int:user_id>")

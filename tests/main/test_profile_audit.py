@@ -3,6 +3,7 @@ from io import BytesIO
 from flask import g, has_app_context
 
 from app.extensions import db
+from app.models.organization import Designation
 from app.models.hr import AuditEvent
 from app.models.user import EmployeeProfile, User
 
@@ -99,3 +100,48 @@ def test_profile_photo_rejects_non_image_uploads(client, app):
     assert response.status_code == 302
     with app.app_context():
         assert User.query.filter_by(username="unsafe-photo").one().employee_profile.profile_photo_stored_path is None
+
+
+def test_profile_shows_read_only_reporting_officer_and_other_designation_holders(client, app):
+    with app.app_context():
+        manager_designation = Designation(name="Engineering Manager", is_reporting_officer_designation=True)
+        employee_designation = Designation(name="Software Engineer")
+        db.session.add_all([manager_designation, employee_designation])
+        db.session.flush()
+
+        manager = User(username="manager-one", must_change_password=False)
+        manager.set_password("password")
+        alternate_manager = User(username="manager-two", must_change_password=False)
+        alternate_manager.set_password("password")
+        employee = User(username="reporting-employee", must_change_password=False)
+        employee.set_password("password")
+        db.session.add_all([manager, alternate_manager, employee])
+        db.session.flush()
+        db.session.add_all([
+            EmployeeProfile(user_id=manager.id, full_name="User B Manager", designation_id=manager_designation.id),
+            EmployeeProfile(user_id=alternate_manager.id, full_name="User C Manager", designation_id=manager_designation.id),
+            EmployeeProfile(
+                user_id=employee.id,
+                full_name="User A Employee",
+                designation_id=employee_designation.id,
+                reporting_officer_id=manager.id,
+            ),
+        ])
+        db.session.commit()
+        employee_id = employee.id
+
+    with client.session_transaction() as session:
+        session["_user_id"] = str(employee_id)
+        session["_fresh"] = True
+    if has_app_context():
+        g.pop("_login_user", None)
+
+    response = client.get("/profile")
+
+    assert response.status_code == 200
+    assert b"REPORTING LINE" in response.data
+    assert b"Direct reporting officer" in response.data
+    assert b"User B Manager" in response.data
+    assert b"User C Manager" in response.data
+    assert b"Engineering Manager" in response.data
+    assert b'name="reporting_officer_id"' not in response.data
