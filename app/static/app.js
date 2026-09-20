@@ -65,3 +65,17 @@ if (documentOwnerSelect) {
     window.location.assign(`${window.location.pathname}?employee_user_id=${encodeURIComponent(documentOwnerSelect.value)}`);
   });
 }
+
+const attendanceRequestType = document.querySelector('[data-attendance-request-type]');
+const attendanceRequestFields = document.querySelector('[data-attendance-request-fields]');
+if (attendanceRequestType && attendanceRequestFields) {
+  const toggleAttendanceFields = () => {
+    const selected = attendanceRequestType.options[attendanceRequestType.selectedIndex];
+    const enabled = selected?.dataset.attendanceChange === 'true';
+    attendanceRequestFields.hidden = !enabled;
+    attendanceRequestFields.disabled = !enabled;
+    attendanceRequestFields.querySelector('[data-attendance-required]')?.toggleAttribute('required', enabled);
+  };
+  attendanceRequestType.addEventListener('change', toggleAttendanceFields);
+  toggleAttendanceFields();
+}

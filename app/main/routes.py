@@ -1,4 +1,4 @@
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from io import BytesIO, StringIO
 from pathlib import Path
 import csv
@@ -11,7 +11,7 @@ from sqlalchemy import or_
 from app.extensions import db
 from app.main import bp
 from app.models.hr import (
-    AttendanceRecord, AuditEvent, BirthdayEmailSettings, CompensationRecord, DirectMessage, EmployeeDocument, LeaveBalance, LeaveRequest,
+    AttendanceChangeRequest, AttendanceRecord, AuditEvent, BirthdayEmailSettings, CompensationRecord, DirectMessage, EmployeeDocument, LeaveBalance, LeaveRequest,
     LeaveType, Notification, OtherRequest, OtherRequestActivity, OtherRequestAttachment,
     Payslip, PublicHoliday, RequestType,
     ApprovalDecision, ApprovalInstance, DesignationApprovalAssignment,
@@ -58,6 +58,16 @@ def _parse_iso_date(field_name):
         raise ValueError(f"{field_name.replace('_', ' ').title()} must be a valid date.")
 
 
+def _parse_optional_time(field_name):
+    value = request.form.get(field_name, "").strip()
+    if not value:
+        return None
+    try:
+        return time.fromisoformat(value)
+    except ValueError:
+        raise ValueError(f"{field_name.replace('_', ' ').title()} must be a valid time.")
+
+
 def _valid_work_email(email):
     return not email or ("@" in email and email.rsplit("@", 1)[1].strip())
 
@@ -81,6 +91,19 @@ def _active_managers(exclude_user_id=None):
 def _hr_users():
     """Access roles are evaluated in Python so the same policy applies everywhere."""
     return [user for user in User.query.filter_by(is_active=True).all() if user.has_hr_access]
+
+
+def _can_review_attendance_corrections(user):
+    """Attendance corrections are an HR/Admin control, not a manager shortcut."""
+    return bool(
+        user.is_administrator
+        or user.is_designation_admin
+        or (user.access_role and user.access_role.grants_hr_access)
+    )
+
+
+def _attendance_reviewers():
+    return [user for user in User.query.filter_by(is_active=True).all() if _can_review_attendance_corrections(user)]
 
 
 def _email_system_notification_recipients(user_ids, subject, body):
@@ -531,8 +554,6 @@ def approvals():
     """One operational inbox for reporting-officer and designation decisions."""
     designation_assignments = pending_assignments_for(current_user).all()
     legacy_decisions = pending_decisions_for(current_user).all()
-    if not current_user.can_approve_requests and not designation_assignments and not legacy_decisions:
-        return "Forbidden", 403
     cancellation_items = _leave_review_scope().filter(LeaveRequest.status == "cancellation_requested").all()
     direct_leave_items = _leave_review_scope().filter(
         LeaveRequest.status.in_(("submitted", "returned")),
@@ -542,6 +563,12 @@ def approvals():
         if not case_for_subject("leave", item.id)
         and not ApprovalInstance.query.filter_by(subject_type="leave", subject_id=item.id, status="pending").first()
     ]
+    can_review_attendance_corrections = _can_review_attendance_corrections(current_user)
+    attendance_change_requests = (
+        AttendanceChangeRequest.query.filter_by(status="submitted")
+        .order_by(AttendanceChangeRequest.created_at.asc()).all()
+        if can_review_attendance_corrections else []
+    )
     approval_cards = []
     for assignment in designation_assignments:
         case = assignment.case
@@ -556,14 +583,101 @@ def approvals():
                     for item in case.assignments
                 ),
             })
+    if not current_user.can_approve_requests and not designation_assignments and not legacy_decisions and not attendance_change_requests:
+        return "Forbidden", 403
     return render_template(
         "approvals.html",
         approval_cards=approval_cards,
         legacy_decisions=legacy_decisions,
         cancellation_items=cancellation_items,
         direct_leave_items=direct_leave_items,
+        attendance_change_requests=attendance_change_requests,
+        can_review_attendance_corrections=can_review_attendance_corrections,
         referral_designations=Designation.query.filter_by(is_active=True).order_by(Designation.name).all(),
     )
+
+
+@bp.post("/approvals/attendance-change/<int:change_id>")
+@login_required
+def review_attendance_change(change_id):
+    if not _can_review_attendance_corrections(current_user):
+        return "Forbidden", 403
+    change = db.get_or_404(AttendanceChangeRequest, change_id)
+    action = request.form.get("action")
+    comment = request.form.get("comment", "").strip()[:500]
+    if change.status != "submitted":
+        return "This attendance correction has already been decided.", 409
+    if action not in {"approved", "rejected"}:
+        return "Invalid attendance decision", 400
+    if action == "rejected" and not comment:
+        flash("Add a short reason when rejecting an attendance correction.")
+        return redirect(url_for("main.approvals"))
+
+    if action == "approved":
+        record = AttendanceRecord.query.filter_by(
+            user_id=change.user_id, work_date=change.attendance_date,
+        ).first()
+        check_in_time = change.requested_check_in_time or (record.checked_in_at.time() if record else None)
+        check_out_time = change.requested_check_out_time or (record.checked_out_at.time() if record and record.checked_out_at else None)
+        if check_in_time is None:
+            flash("A check-in time is required to create or correct an attendance record.")
+            return redirect(url_for("main.approvals"))
+        checked_in_at = datetime.combine(change.attendance_date, check_in_time)
+        checked_out_at = datetime.combine(change.attendance_date, check_out_time) if check_out_time else None
+        if checked_out_at and checked_out_at <= checked_in_at:
+            flash("Check-out time must be later than check-in time.")
+            return redirect(url_for("main.approvals"))
+        if record is None:
+            record = AttendanceRecord(
+                user_id=change.user_id,
+                work_date=change.attendance_date,
+                checked_in_at=checked_in_at,
+                checked_out_at=checked_out_at,
+                check_in_note="Created from approved attendance correction.",
+                check_out_note="Created from approved attendance correction." if checked_out_at else None,
+            )
+            db.session.add(record)
+        else:
+            record.checked_in_at = checked_in_at
+            record.checked_out_at = checked_out_at
+            record.check_in_note = "Corrected through approved attendance request."
+            if checked_out_at:
+                record.check_out_note = "Corrected through approved attendance request."
+
+    now = datetime.utcnow()
+    change.status = action
+    change.reviewer_id = current_user.id
+    change.reviewer_comment = comment or None
+    change.processed_at = now
+    change.request.status = action
+    db.session.add(OtherRequestActivity(
+        other_request_id=change.other_request_id,
+        actor_id=current_user.id,
+        activity_type=f"attendance_{action}",
+        message=comment or f"Attendance correction {action}.",
+    ))
+    db.session.add(Notification(
+        user_id=change.user_id,
+        message=("Your attendance correction was approved and your official attendance record was updated."
+                 if action == "approved" else "Your attendance correction was rejected. Please review the HR comment."),
+    ))
+    db.session.add(AuditEvent(
+        actor_id=current_user.id,
+        entity_type="attendance_change_request",
+        entity_id=change.id,
+        action=action,
+        summary=f"Attendance correction for {change.attendance_date:%d/%m/%Y} was {action}.",
+    ))
+    db.session.commit()
+    if change.user.email:
+        send_notice_email(
+            change.user.email,
+            f"Pointlabs One · Attendance correction {action}",
+            ("Your attendance correction was approved and your official attendance record was updated."
+             if action == "approved" else "Your attendance correction was rejected. Please sign in to review the HR comment."),
+        )
+    flash("Attendance correction approved and applied." if action == "approved" else "Attendance correction rejected.")
+    return redirect(url_for("main.approvals"))
 
 
 def _complete_designation_approval(case, action, comment):
@@ -1592,6 +1706,7 @@ DEFAULT_REQUEST_CATEGORIES = (
     "Salary Certificate", "Employment / Experience Certificate", "Employment Verification Letter",
     "NOC Request", "Salary Transfer Letter", "Personal Information Update",
     "Employee Document Copy Request", "Visa Application Support Letter", "Other HR Request",
+    "Change Attendance",
 )
 
 
@@ -1628,6 +1743,44 @@ def other_requests():
         db.session.add(item)
         db.session.flush()
         db.session.add(OtherRequestActivity(other_request_id=item.id, actor_id=current_user.id, activity_type="submitted", message="Request submitted."))
+        if category == "Change Attendance":
+            try:
+                attendance_date = _parse_iso_date("attendance_date")
+                requested_check_in_time = _parse_optional_time("requested_check_in_time")
+                requested_check_out_time = _parse_optional_time("requested_check_out_time")
+            except ValueError as error:
+                db.session.rollback()
+                flash(str(error))
+                return redirect(url_for("main.other_requests"))
+            if not attendance_date or not (requested_check_in_time or requested_check_out_time):
+                db.session.rollback()
+                flash("Choose the attendance date and enter the check-in time, check-out time, or both.")
+                return redirect(url_for("main.other_requests"))
+            if attendance_date > date.today():
+                db.session.rollback()
+                flash("An attendance correction cannot be requested for a future date.")
+                return redirect(url_for("main.other_requests"))
+            db.session.add(AttendanceChangeRequest(
+                other_request_id=item.id,
+                user_id=current_user.id,
+                attendance_date=attendance_date,
+                requested_check_in_time=requested_check_in_time,
+                requested_check_out_time=requested_check_out_time,
+            ))
+            admin_ids = [user.id for user in _attendance_reviewers() if user.id != current_user.id]
+            for admin_id in admin_ids:
+                db.session.add(Notification(
+                    user_id=admin_id,
+                    message=f"Attendance correction requested by {display_name(current_user)} for {attendance_date:%d/%m/%Y}.",
+                ))
+            db.session.commit()
+            _email_system_notification_recipients(
+                admin_ids,
+                "Pointlabs One · Attendance correction requires review",
+                f"{display_name(current_user)} requested an attendance correction for {attendance_date:%d/%m/%Y}. Sign in to Approvals to review it.",
+            )
+            flash("Your attendance correction was sent to HR for review.")
+            return redirect(url_for("main.other_request_detail", request_id=item.id))
         try:
             approval_case = start_designation_approval("other_request", item.id, current_user)
         except ValueError as error:
@@ -1703,7 +1856,7 @@ def other_request_detail(request_id):
                 mime_type=mime_type, uploaded_by_id=current_user.id,
             ))
         employee_editable = item.status in {"draft", "submitted", "more_information_required", "resubmitted"}
-        if action == "edit" and item.user_id == current_user.id and employee_editable:
+        if action == "edit" and not item.attendance_change_request and item.user_id == current_user.id and employee_editable:
             details = request.form.get("details", "").strip()
             if details:
                 item.subject, item.details, item.status = request.form.get("subject", "").strip() or None, details, "resubmitted" if item.status == "more_information_required" else item.status
@@ -1718,6 +1871,8 @@ def other_request_detail(request_id):
         elif action == "cancel" and item.user_id == current_user.id and item.status not in {"completed", "cancelled", "rejected"}:
             item.status, item.cancelled_at = "cancelled", datetime.utcnow()
             db.session.add(OtherRequestActivity(other_request_id=item.id, actor_id=current_user.id, activity_type="cancelled", message="Employee cancelled this request."))
+        elif item.attendance_change_request and action in {"in_review", "more_information_required", "in_progress", "completed", "rejected"}:
+            return "Attendance corrections must be decided from Approvals.", 409
         elif current_user.has_hr_access and action in {"in_review", "more_information_required", "in_progress", "completed", "rejected"}:
             if ApprovalInstance.query.filter_by(subject_type="other_request", subject_id=item.id, status="pending").first():
                 return "This request must be decided through its configured approval workflow", 409
@@ -1748,7 +1903,12 @@ def other_request_detail(request_id):
         flash("Request updated.")
         return redirect(url_for("main.other_request_detail", request_id=item.id))
     activities = [activity for activity in item.activities if current_user.has_hr_access or not activity.is_internal]
-    return render_template("other_request_detail.html", item=item, activities=activities)
+    return render_template(
+        "other_request_detail.html",
+        item=item,
+        activities=activities,
+        can_review_attendance_corrections=_can_review_attendance_corrections(current_user),
+    )
 
 
 @bp.route("/admin/master-data/<string:kind>", methods=["GET", "POST"])

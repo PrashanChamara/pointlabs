@@ -82,7 +82,7 @@ def test_configuration_admin_can_edit_entity_location_and_department(client, app
         assert db.session.get(Location, location_id).name == "Dubai HQ"
 
 
-def test_yellow_pages_is_contact_only_and_attendance_is_hidden_for_employee(client, app):
+def test_yellow_pages_is_contact_only_and_attendance_is_visible_for_employee(client, app):
     with app.app_context():
         entity = Entity(name="Pointlabs Sri Lanka")
         manager_title = Designation(name="Engineering Manager", is_reporting_officer_designation=True)
@@ -102,7 +102,7 @@ def test_yellow_pages_is_contact_only_and_attendance_is_hidden_for_employee(clie
     assert b"Export" not in response.data
     response = client.get("/")
     assert b"Yellow Pages" in response.data
-    assert b">Attendance<" not in response.data
+    assert b">Attendance<" in response.data
 
 
 

@@ -1,7 +1,7 @@
 from app.extensions import db
 from app.models.organization import Designation
 from app.models.user import EmployeeProfile, User
-from app.models.hr import LeaveType
+from app.models.hr import LeaveType, RequestType
 
 DESIGNATIONS = """Chief Business Officer|Chief Executive Officer|Chief Finance & Compliance Officer|Chief Technology & Innovation Officer|Consultant - Partnership|Consultant UI UX Designer|Consultant – IT Program Manager|Country Head South Asia|Finance Manager|Frontend Developer|Gen AI Engineer|Head of Engineering|Head of Operations|Head of Product|Head – Global Partnerships & Alliances|Intern Product Management|Lead Back-End Engineer|Manager Quality Assurance|Manager, Partnerships & Operations|Marketing Support|Merchant Partnership Manager|Principal Engineering Consultant|Principal Quality Assurance Consultant|Principal Software Developer|Product Designer|Quality Assurance Consultant|Senior Developer|Snr Partnership Manager|Solution Architect|Sr Front-End Developer|Strategic Advisor|Tech Consultant|Technical Lead Consultant""".split("|")
 REPORTING = {"Chief Executive Officer", "Chief Finance & Compliance Officer", "Chief Technology & Innovation Officer", "Head of Engineering", "Head of Operations", "Head of Product", "Head – Global Partnerships & Alliances", "Lead Back-End Engineer", "Manager Quality Assurance", "Principal Software Developer", "Senior Developer"}
@@ -18,6 +18,10 @@ STANDARD_LEAVE_TYPES = {
     "Compassionate Leave": ("COMPASSIONATE", 0, "annual"),
     "Off in Lieu": ("OFF_IN_LIEU", 0, "annual"),
     "WFH": ("WFH", 0, "annual"),
+}
+
+STANDARD_REQUEST_TYPES = {
+    "Change Attendance": "Request a reviewed correction to an official check-in or check-out record.",
 }
 
 def seed_reference_data(password):
@@ -46,4 +50,7 @@ def seed_reference_data(password):
         item.default_days, item.accrual_method = days, accrual
         item.requires_manager_approval = True
         db.session.add(item)
+    for name, description in STANDARD_REQUEST_TYPES.items():
+        if RequestType.query.filter_by(name=name).first() is None:
+            db.session.add(RequestType(name=name, description=description))
     db.session.commit()

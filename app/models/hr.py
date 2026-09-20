@@ -184,6 +184,25 @@ class OtherRequest(db.Model):
     request_type = db.relationship("RequestType")
 
 
+class AttendanceChangeRequest(db.Model):
+    """A requested correction, separate from the immutable captured attendance event."""
+    id = db.Column(db.Integer, primary_key=True)
+    other_request_id = db.Column(db.Integer, db.ForeignKey("other_request.id"), nullable=False, unique=True, index=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
+    attendance_date = db.Column(db.Date, nullable=False, index=True)
+    requested_check_in_time = db.Column(db.Time(), nullable=True)
+    requested_check_out_time = db.Column(db.Time(), nullable=True)
+    status = db.Column(db.String(30), nullable=False, default="submitted", index=True)
+    reviewer_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+    reviewer_comment = db.Column(db.String(500), nullable=True)
+    processed_at = db.Column(db.DateTime, nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    request = db.relationship("OtherRequest", backref=db.backref("attendance_change_request", uselist=False))
+    user = db.relationship("User", foreign_keys=[user_id], backref="attendance_change_requests")
+    reviewer = db.relationship("User", foreign_keys=[reviewer_id])
+
+
 class RequestType(db.Model):
     """HR service catalogue owned by HR, never by a hard-coded form list."""
     id = db.Column(db.Integer, primary_key=True)
