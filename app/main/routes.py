@@ -569,6 +569,12 @@ def approvals():
         .order_by(AttendanceChangeRequest.created_at.asc()).all()
         if can_review_attendance_corrections else []
     )
+    attendance_change_cards = []
+    for change in attendance_change_requests:
+        current_record = AttendanceRecord.query.filter_by(
+            user_id=change.user_id, work_date=change.attendance_date,
+        ).first()
+        attendance_change_cards.append({"change": change, "current_record": current_record})
     approval_cards = []
     for assignment in designation_assignments:
         case = assignment.case
@@ -591,7 +597,7 @@ def approvals():
         legacy_decisions=legacy_decisions,
         cancellation_items=cancellation_items,
         direct_leave_items=direct_leave_items,
-        attendance_change_requests=attendance_change_requests,
+        attendance_change_cards=attendance_change_cards,
         can_review_attendance_corrections=can_review_attendance_corrections,
         referral_designations=Designation.query.filter_by(is_active=True).order_by(Designation.name).all(),
     )
@@ -606,9 +612,11 @@ def review_attendance_change(change_id):
     action = request.form.get("action")
     comment = request.form.get("comment", "").strip()[:500]
     if change.status != "submitted":
-        return "This attendance correction has already been decided.", 409
+        flash("This attendance correction has already been decided. The recorded decision is shown below.")
+        return redirect(url_for("main.other_request_detail", request_id=change.other_request_id))
     if action not in {"approved", "rejected"}:
-        return "Invalid attendance decision", 400
+        flash("Choose either Approve correction or Reject correction.")
+        return redirect(url_for("main.approvals"))
     if action == "rejected" and not comment:
         flash("Add a short reason when rejecting an attendance correction.")
         return redirect(url_for("main.approvals"))
@@ -1466,7 +1474,21 @@ def reports():
         from_date, to_date = date.today().replace(month=1, day=1), date.today()
     leaves = LeaveRequest.query.filter(LeaveRequest.start_date <= to_date, LeaveRequest.end_date >= from_date).order_by(LeaveRequest.created_at.desc()).all()
     annual_sick = LeaveBalance.query.join(LeaveType).filter(LeaveBalance.calendar_year == from_date.year, LeaveType.code.in_(["ANNUAL", "SICK"])).all()
-    return render_template("reports.html", employees=EmployeeProfile.query.filter(EmployeeProfile.employment_status == "active").count(), pending=LeaveRequest.query.filter(LeaveRequest.status.in_(["submitted", "cancellation_requested"])).count(), approved=LeaveRequest.query.filter_by(status="approved").count(), leaves=leaves[:8], balances=annual_sick, from_date=from_date, to_date=to_date)
+    attendance_records = AttendanceRecord.query.filter(
+        AttendanceRecord.work_date.between(from_date, to_date),
+    ).order_by(AttendanceRecord.work_date.desc(), AttendanceRecord.checked_in_at.desc()).all()
+    attendance_hours = sum(
+        (record.checked_out_at - record.checked_in_at).total_seconds() / 3600
+        for record in attendance_records if record.checked_out_at
+    )
+    return render_template(
+        "reports.html",
+        leaves=leaves[:8], balances=annual_sick,
+        attendance_records=attendance_records[:12],
+        attendance_record_count=len(attendance_records),
+        attendance_hours=round(attendance_hours, 1),
+        from_date=from_date, to_date=to_date,
+    )
 
 
 @bp.get("/reports/leave.csv")

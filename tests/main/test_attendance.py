@@ -1,3 +1,5 @@
+from datetime import date, datetime
+
 from flask import g, has_app_context
 
 from app.extensions import db
@@ -76,6 +78,9 @@ def test_attendance_correction_is_an_hr_request_and_only_approval_updates_the_re
     assert admin_client.get("/admin/attendance.csv").status_code == 200
     response = admin_client.post(f"/approvals/attendance-change/{change_id}", data={"action": "approved", "comment": "Approved after access-log review."})
     assert response.status_code == 302
+    repeat_response = admin_client.post(f"/approvals/attendance-change/{change_id}", data={"action": "approved"})
+    assert repeat_response.status_code == 302
+    assert f"/requests/".encode() in repeat_response.headers["Location"].encode()
     with app.app_context():
         change = db.session.get(AttendanceChangeRequest, change_id)
         record = AttendanceRecord.query.one()
@@ -87,6 +92,34 @@ def test_attendance_correction_is_an_hr_request_and_only_approval_updates_the_re
         assert record.checked_in_at.strftime("%H:%M") == "09:00"
         assert record.checked_out_at.strftime("%H:%M") == "17:30"
         assert Notification.query.filter_by(user_id=user_id).count() == 1
+
+
+def test_reports_surface_selected_period_attendance_and_csv_export(client, app):
+    with app.app_context():
+        seed_reference_data("admin123")
+        admin = User.query.filter_by(username="admin").one()
+        user = User(username="attendance-report-user", must_change_password=False)
+        user.set_password("password")
+        db.session.add(user)
+        db.session.flush()
+        db.session.add(EmployeeProfile(user_id=user.id, full_name="Attendance Report User"))
+        db.session.add(AttendanceRecord(
+            user_id=user.id,
+            work_date=date(2026, 9, 20),
+            checked_in_at=datetime(2026, 9, 20, 9, 0),
+            checked_out_at=datetime(2026, 9, 20, 17, 30),
+        ))
+        db.session.commit()
+        _sign_in(client, admin)
+
+    response = client.get("/reports?from_date=2026-09-01&to_date=2026-09-30")
+    assert response.status_code == 200
+    assert b"ATTENDANCE REPORT" in response.data
+    assert b"Attendance Report User" in response.data
+    assert b"Attendance CSV" in response.data
+    export = client.get("/admin/attendance.csv?from_date=2026-09-01&to_date=2026-09-30")
+    assert export.status_code == 200
+    assert b"Attendance Report User" in export.data
 
 
 def test_attendance_page_has_only_system_capture_actions(client, app):

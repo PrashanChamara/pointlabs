@@ -7,7 +7,7 @@
   <title>{% block title %}Pointlabs One{% endblock %}</title>
   <link rel="manifest" href="{{ url_for('static', filename='manifest.webmanifest') }}">
   <link rel="icon" href="{{ url_for('static', filename='icon.png') }}">
-<link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='20260920-2') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='app.css', v='20260921-1') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='auth.css', v='20260920-1') }}">
   <script>document.documentElement.dataset.theme=localStorage.getItem('pointlabs-theme')||'light'</script>
 </head>
@@ -18,7 +18,7 @@
     {% block content %}{% endblock %}
   </main>
   {% if current_user.is_authenticated and workspace_sticky_notes %}<aside class="global-sticky-stack" aria-label="Workspace notes">{% for note in workspace_sticky_notes %}<div class="global-sticky {{ note.color }}">{{ note.body }}</div>{% endfor %}</aside>{% endif %}
-  <script src="{{ url_for('static', filename='app.js', v='20260920-2') }}"></script>
+  <script src="{{ url_for('static', filename='app.js', v='20260921-1') }}"></script>
   <script>if('serviceWorker' in navigator) navigator.serviceWorker.register('/service-worker.js')</script>
 </body>
 </html>
