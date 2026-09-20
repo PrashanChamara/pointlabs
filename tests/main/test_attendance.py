@@ -112,17 +112,49 @@ def test_reports_surface_selected_period_attendance_and_csv_export(client, app):
         db.session.commit()
         _sign_in(client, admin)
 
-    response = client.get("/reports?from_date=2026-09-01&to_date=2026-09-30")
+    library = client.get("/reports")
+    assert library.status_code == 200
+    assert b"REPORT LIBRARY" in library.data
+    assert b"Attendance" in library.data and b"Leave details" in library.data
+    assert b"Selected-period attendance" not in library.data
+
+    response = client.get("/reports/attendance?from_date=2026-09-01&to_date=2026-09-30")
     assert response.status_code == 200
-    assert b"REPORT LIBRARY" in response.data
-    assert b"ATTENDANCE REPORT" in response.data
+    assert b"ATTENDANCE ANALYTICS" in response.data
     assert b"Attendance Report User" in response.data
-    assert b'aria-label="Export attendance CSV"' in response.data
-    assert b'aria-label="Export annual and sick leave balances CSV"' in response.data
-    assert b"Full employee CSV" not in response.data
+    assert b'aria-label="Export all filtered attendance records"' in response.data
+    assert b"CORRECTION / DECISION" in response.data
     export = client.get("/admin/attendance.csv?from_date=2026-09-01&to_date=2026-09-30")
     assert export.status_code == 200
     assert b"Attendance Report User" in export.data
+
+
+def test_attendance_report_and_yellow_pages_paginate_at_ten_records(client, app):
+    with app.app_context():
+        seed_reference_data("admin123")
+        admin = User.query.filter_by(username="admin").one()
+        for number in range(11):
+            user = User(username=f"report-page-{number}", must_change_password=False)
+            user.set_password("password")
+            db.session.add(user)
+            db.session.flush()
+            db.session.add(EmployeeProfile(user_id=user.id, full_name=f"Report Page Person {number:02d}"))
+            db.session.add(AttendanceRecord(
+                user_id=user.id, work_date=date(2026, 9, 20),
+                checked_in_at=datetime(2026, 9, 20, 9, 0), checked_out_at=datetime(2026, 9, 20, 17, 0),
+            ))
+        db.session.commit()
+        _sign_in(client, admin)
+
+    first_page = client.get("/reports/attendance?from_date=2026-09-01&to_date=2026-09-30")
+    assert first_page.status_code == 200
+    assert b'aria-label="Attendance report pages"' in first_page.data
+    second_page = client.get("/reports/attendance?from_date=2026-09-01&to_date=2026-09-30&page=2")
+    assert second_page.status_code == 200
+    assert b"Report Page Person" in second_page.data
+    yellow_pages = client.get("/yellow-pages?page=2")
+    assert yellow_pages.status_code == 200
+    assert b"Report Page Person" in yellow_pages.data
 
 
 def test_attendance_page_has_only_system_capture_actions(client, app):

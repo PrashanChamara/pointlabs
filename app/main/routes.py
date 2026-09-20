@@ -978,7 +978,9 @@ def yellow_pages():
             Designation.name.ilike(pattern),
             Entity.name.ilike(pattern),
         ))
-    people = query.order_by(EmployeeProfile.full_name).limit(150).all()
+    people = query.order_by(EmployeeProfile.full_name).paginate(
+        page=max(1, request.args.get("page", 1, type=int)), per_page=10, error_out=False,
+    )
     return render_template("yellow_pages.html", people=people, term=term)
 
 
@@ -1349,13 +1351,16 @@ def attendance_export():
         return "Invalid date range", 400
     if to_date < from_date:
         return "Invalid date range", 400
+    term = request.args.get("q", "").strip()
     stream = StringIO(); writer = csv.writer(stream)
-    writer.writerow(["Employee Code", "Employee", "Department", "Location", "Work Date", "Checked In", "Checked Out", "Hours Worked"])
-    records = AttendanceRecord.query.join(User).filter(AttendanceRecord.work_date.between(from_date, to_date)).order_by(AttendanceRecord.work_date, AttendanceRecord.user_id).all()
+    writer.writerow(["Employee Code", "Employee", "Designation", "Department", "Location", "Work Date", "Checked In", "Checked Out", "Hours Worked", "Correction Status", "Approved/Rejected By", "Correction Comment"])
+    records = _attendance_report_query(from_date, to_date, term).order_by(AttendanceRecord.work_date, AttendanceRecord.user_id).all()
+    changes = _latest_attendance_changes(records)
     for item in records:
         profile = item.user.employee_profile
         hours = round((item.checked_out_at - item.checked_in_at).total_seconds() / 3600, 2) if item.checked_out_at else ""
-        writer.writerow([profile.employee_code if profile else "", profile.full_name if profile else item.user.username, profile.department.name if profile and profile.department else "", profile.location.name if profile and profile.location else "", item.work_date.isoformat(), item.checked_in_at.isoformat(sep=" "), item.checked_out_at.isoformat(sep=" ") if item.checked_out_at else "", hours])
+        change = changes.get((item.user_id, item.work_date))
+        writer.writerow([profile.employee_code if profile else "", profile.full_name if profile else item.user.username, profile.designation.name if profile and profile.designation else "", profile.department.name if profile and profile.department else "", profile.location.name if profile and profile.location else "", item.work_date.isoformat(), item.checked_in_at.isoformat(sep=" "), item.checked_out_at.isoformat(sep=" ") if item.checked_out_at else "", hours, change.status if change else "", display_name(change.reviewer) if change and change.reviewer else "", change.reviewer_comment if change else ""])
     return send_file(BytesIO(stream.getvalue().encode()), mimetype="text/csv", as_attachment=True, download_name=f"pointlabs-attendance-{from_date}-{to_date}.csv")
 
 
@@ -1467,25 +1472,64 @@ def reports():
     denied = admin_only()
     if denied:
         return denied
+    return render_template("reports.html")
+
+
+def _report_date_range():
     try:
         from_date = date.fromisoformat(request.args.get("from_date")) if request.args.get("from_date") else date.today().replace(month=1, day=1)
         to_date = date.fromisoformat(request.args.get("to_date")) if request.args.get("to_date") else date.today()
     except ValueError:
         from_date, to_date = date.today().replace(month=1, day=1), date.today()
-    annual_sick = LeaveBalance.query.join(LeaveType).filter(LeaveBalance.calendar_year == from_date.year, LeaveType.code.in_(["ANNUAL", "SICK"])).all()
-    attendance_records = AttendanceRecord.query.filter(
+    if to_date < from_date:
+        from_date, to_date = to_date, from_date
+    return from_date, to_date
+
+
+def _attendance_report_query(from_date, to_date, term):
+    query = AttendanceRecord.query.join(User, AttendanceRecord.user_id == User.id).outerjoin(
+        EmployeeProfile, EmployeeProfile.user_id == User.id,
+    ).outerjoin(Designation, EmployeeProfile.designation_id == Designation.id).filter(
         AttendanceRecord.work_date.between(from_date, to_date),
-    ).order_by(AttendanceRecord.work_date.desc(), AttendanceRecord.checked_in_at.desc()).all()
-    attendance_hours = sum(
-        (record.checked_out_at - record.checked_in_at).total_seconds() / 3600
-        for record in attendance_records if record.checked_out_at
     )
+    if term:
+        pattern = f"%{term}%"
+        query = query.filter(or_(
+            EmployeeProfile.full_name.ilike(pattern), EmployeeProfile.employee_code.ilike(pattern),
+            User.email.ilike(pattern), User.username.ilike(pattern), Designation.name.ilike(pattern),
+        ))
+    return query.order_by(AttendanceRecord.work_date.desc(), AttendanceRecord.checked_in_at.desc())
+
+
+def _latest_attendance_changes(records):
+    if not records:
+        return {}
+    record_keys = {(record.user_id, record.work_date) for record in records}
+    changes = AttendanceChangeRequest.query.filter(
+        AttendanceChangeRequest.user_id.in_({user_id for user_id, _work_date in record_keys}),
+        AttendanceChangeRequest.attendance_date.in_({work_date for _user_id, work_date in record_keys}),
+    ).order_by(AttendanceChangeRequest.processed_at.desc(), AttendanceChangeRequest.created_at.desc()).all()
+    latest = {}
+    for change in changes:
+        latest.setdefault((change.user_id, change.attendance_date), change)
+    return latest
+
+
+@bp.get("/reports/attendance")
+@login_required
+def attendance_report():
+    denied = admin_only()
+    if denied:
+        return denied
+    from_date, to_date = _report_date_range()
+    term = request.args.get("q", "").strip()
+    records = _attendance_report_query(from_date, to_date, term).paginate(
+        page=max(1, request.args.get("page", 1, type=int)), per_page=10, error_out=False,
+    )
+    changes = _latest_attendance_changes(records.items)
+    rows = [{"record": record, "change": changes.get((record.user_id, record.work_date))} for record in records.items]
     return render_template(
-        "reports.html",
-        balances=annual_sick,
-        attendance_records=attendance_records[:12],
-        attendance_record_count=len(attendance_records),
-        attendance_hours=round(attendance_hours, 1),
+        "attendance_report.html", records=records, rows=rows, term=term,
         from_date=from_date, to_date=to_date,
     )
 
@@ -1493,12 +1537,69 @@ def reports():
 @bp.get("/reports/leave.csv")
 @login_required
 def leave_report():
-    if not (current_user.is_administrator or current_user.employee_profile):
-        return "Forbidden", 403
-    stream = StringIO(); writer = csv.writer(stream); writer.writerow(["Employee", "Leave type", "Start", "End", "Days", "Status"])
-    for item in LeaveRequest.query.order_by(LeaveRequest.created_at.desc()).all():
-        writer.writerow([display_name(item.user), item.leave_type.name, item.start_date, item.end_date, item.days, item.status])
+    denied = admin_only()
+    if denied:
+        return denied
+    from_date, to_date = _report_date_range()
+    term = request.args.get("q", "").strip()
+    stream = StringIO(); writer = csv.writer(stream)
+    writer.writerow(["Employee", "Employee Code", "Designation", "Leave Type", "Start", "End", "Days", "Status", "Approved By", "Reviewer Comment"])
+    for item in _leave_request_report_query(from_date, to_date, term).all():
+        profile = item.user.employee_profile
+        writer.writerow([display_name(item.user), profile.employee_code if profile else "", profile.designation.name if profile and profile.designation else "", item.leave_type.name, item.start_date, item.end_date, item.days, item.status, display_name(item.approver) if item.approver else "", item.reviewer_comment or ""])
     return send_file(BytesIO(stream.getvalue().encode()), mimetype="text/csv", as_attachment=True, download_name="pointlabs-leave-report.csv")
+
+
+def _leave_request_report_query(from_date, to_date, term):
+    query = LeaveRequest.query.join(User, LeaveRequest.user_id == User.id).join(LeaveType).outerjoin(
+        EmployeeProfile, EmployeeProfile.user_id == User.id,
+    ).outerjoin(Designation, EmployeeProfile.designation_id == Designation.id).filter(
+        LeaveRequest.start_date <= to_date, LeaveRequest.end_date >= from_date,
+    )
+    if term:
+        pattern = f"%{term}%"
+        query = query.filter(or_(
+            EmployeeProfile.full_name.ilike(pattern), EmployeeProfile.employee_code.ilike(pattern),
+            User.email.ilike(pattern), User.username.ilike(pattern), Designation.name.ilike(pattern),
+            LeaveType.name.ilike(pattern), LeaveRequest.status.ilike(pattern),
+        ))
+    return query.order_by(LeaveRequest.start_date.desc(), LeaveRequest.created_at.desc())
+
+
+def _leave_balance_report_query(calendar_year, term):
+    query = LeaveBalance.query.join(LeaveType).join(User, LeaveBalance.user_id == User.id).outerjoin(
+        EmployeeProfile, EmployeeProfile.user_id == User.id,
+    ).outerjoin(Designation, EmployeeProfile.designation_id == Designation.id).filter(
+        LeaveBalance.calendar_year == calendar_year, LeaveType.code.in_(["ANNUAL", "SICK"]),
+    )
+    if term:
+        pattern = f"%{term}%"
+        query = query.filter(or_(
+            EmployeeProfile.full_name.ilike(pattern), EmployeeProfile.employee_code.ilike(pattern),
+            User.email.ilike(pattern), User.username.ilike(pattern), Designation.name.ilike(pattern),
+            LeaveType.name.ilike(pattern), LeaveType.code.ilike(pattern),
+        ))
+    return query.order_by(EmployeeProfile.full_name, LeaveType.name)
+
+
+@bp.get("/reports/leave")
+@login_required
+def leave_details_report():
+    denied = admin_only()
+    if denied:
+        return denied
+    from_date, to_date = _report_date_range()
+    term = request.args.get("q", "").strip()
+    leave_requests = _leave_request_report_query(from_date, to_date, term).paginate(
+        page=max(1, request.args.get("request_page", 1, type=int)), per_page=10, error_out=False,
+    )
+    balances = _leave_balance_report_query(from_date.year, term).paginate(
+        page=max(1, request.args.get("balance_page", 1, type=int)), per_page=10, error_out=False,
+    )
+    return render_template(
+        "leave_details_report.html", leave_requests=leave_requests, balances=balances,
+        term=term, from_date=from_date, to_date=to_date,
+    )
 
 
 @bp.get("/reports/leave-summary.csv")
@@ -1508,9 +1609,10 @@ def leave_summary_report():
     if denied:
         return denied
     year = request.args.get("year", date.today().year, type=int)
+    term = request.args.get("q", "").strip()
     stream = StringIO(); writer = csv.writer(stream)
     writer.writerow(["Employee", "Employee Code", "Department", "Location", "Leave Type", "Entitled", "Accrued", "Utilized", "Balance"])
-    for balance in LeaveBalance.query.join(LeaveType).filter(LeaveBalance.calendar_year == year, LeaveType.code.in_(["ANNUAL", "SICK"])).order_by(LeaveBalance.user_id).all():
+    for balance in _leave_balance_report_query(year, term).all():
         profile = ensure_profile(balance.user)
         writer.writerow([profile.full_name, profile.employee_code or "", profile.department.name if profile.department else "", profile.location.name if profile.location else "", balance.leave_type.name, balance.entitled_days, balance.accrued_days, balance.utilized_days, balance.available_days])
     return send_file(BytesIO(stream.getvalue().encode()), mimetype="text/csv", as_attachment=True, download_name=f"pointlabs-leave-summary-{year}.csv")
