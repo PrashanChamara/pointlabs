@@ -102,22 +102,37 @@ def send_message_email(to_address, sender_name, message_body):
     )
 
 
-def send_birthday_email(to_address, employee_name, voucher_code=None):
+def send_birthday_email(to_address, employee_name, voucher_code=None, subject=None, message=None, attachments=None):
     plain = f"Happy Birthday, {employee_name}!"
+    if message:
+        plain += f"\n\n{message}"
     if voucher_code:
         plain += f" Your gift voucher code is {voucher_code}."
     return send_email(
         to_address,
-        "Happy Birthday from Pointlabs",
+        subject or "Happy Birthday from Pointlabs",
         plain,
         "emails/birthday.html",
         employee_name=employee_name,
         voucher_code=voucher_code,
         preheader=f"A birthday celebration from the Pointlabs team.",
+        attachments=attachments,
     )
 
 
-def send_notice_email(to_address, subject, body, preheader=None):
+def send_welcome_email(to_address, employee_name, username, temporary_password):
+    """Deliver the initial credentials after the account transaction is committed."""
+    return send_email(
+        to_address,
+        "Welcome to Pointlabs One",
+        f"Hello {employee_name},\n\nWelcome to Pointlabs One. Your User ID is {username}. "
+        f"Your temporary password is {temporary_password}. Please sign in and change it immediately.",
+        "emails/notice.html",
+        preheader="Your Pointlabs One account is ready.",
+    )
+
+
+def send_notice_email(to_address, subject, body, preheader=None, attachments=None):
     """Use the shared branded layout for HR requests, documents and payslip notices."""
     return send_email(
         to_address,
@@ -125,6 +140,7 @@ def send_notice_email(to_address, subject, body, preheader=None):
         body,
         "emails/notice.html",
         preheader=preheader or subject,
+        attachments=attachments,
     )
 
 

@@ -11,7 +11,7 @@ from sqlalchemy import or_
 from app.extensions import db
 from app.main import bp
 from app.models.hr import (
-    AttendanceRecord, AuditEvent, CompensationRecord, DirectMessage, EmployeeDocument, LeaveBalance, LeaveRequest,
+    AttendanceRecord, AuditEvent, BirthdayEmailSettings, CompensationRecord, DirectMessage, EmployeeDocument, LeaveBalance, LeaveRequest,
     LeaveType, Notification, OtherRequest, OtherRequestActivity, OtherRequestAttachment,
     Payslip, PublicHoliday, RequestType,
     ApprovalDecision, ApprovalInstance, DesignationApprovalAssignment,
@@ -21,9 +21,9 @@ from app.models.organization import AccessRole, Department, Designation, Entity,
 from app.models.user import EmployeeProfile, User
 from app.services.email import (
     send_leave_confirmation_email, send_leave_status_email, send_message_email,
-    send_notice_email, send_payslip_email,
+    send_notice_email, send_payslip_email, send_welcome_email,
 )
-from app.services.files import remove_private_profile_photo, store_profile_photo, store_uploaded_file
+from app.services.files import remove_private_profile_photo, remove_private_upload, store_profile_photo, store_uploaded_file
 from app.services.hr import (
     adjust_leave_balance, apply_approved_leave_balance, deactivate_resigned_employees,
     get_or_create_leave_balance, leave_days_for_profile, restore_cancelled_leave_balance,
@@ -151,6 +151,11 @@ def _set_profile_from_form(profile):
     if profile.resignation_date and profile.resignation_date <= date.today():
         profile.employment_status = "resigned"
         profile.user.is_active = False
+    # A recorded exit date changes the final annual and sick entitlement. Refresh
+    # the current records now so a manager and employee see the same balance.
+    if profile.user_id:
+        for leave_type in LeaveType.query.filter(LeaveType.code.in_(("ANNUAL", "SICK"))).all():
+            get_or_create_leave_balance(profile.user, leave_type, date.today().year)
 
 
 def _store_employee_documents(owner, files, category="Employee record"):
@@ -161,6 +166,7 @@ def _store_employee_documents(owner, files, category="Employee record"):
         db.session.add(EmployeeDocument(
             user_id=owner.id,
             category=category,
+            details=None,
             filename=file.filename,
             stored_path=stored_path,
             mime_type=mime_type,
@@ -225,13 +231,17 @@ def dashboard():
             if birthday <= date.today() + timedelta(days=45):
                 upcoming_birthdays.append((birthday, profile))
         upcoming_birthdays.sort(key=lambda item: item[0])
+    announcements = WorkspaceNote.query.filter(
+        WorkspaceNote.is_global.is_(True), WorkspaceNote.show_everywhere.is_(True),
+        or_(WorkspaceNote.expires_at.is_(None), WorkspaceNote.expires_at >= datetime.utcnow()),
+    ).order_by(WorkspaceNote.created_at.desc()).limit(3).all()
     return render_template(
         "dashboard.html", pending=pending, today=today, notifications=notifications,
         unread_messages=DirectMessage.query.filter_by(recipient_id=current_user.id, is_read=False).count(),
         greeting=greeting_for_hour(datetime.now().hour),
         people_count=EmployeeProfile.query.join(User, EmployeeProfile.user_id == User.id).filter(User.is_active.is_(True)).count(),
         active_requests=active_requests, focus_tasks=focus_tasks, attendance_today=attendance_today,
-        upcoming_birthdays=upcoming_birthdays[:4],
+        upcoming_birthdays=upcoming_birthdays[:4], announcements=announcements,
     )
 
 
@@ -784,6 +794,7 @@ def employees():
     designation_id = request.args.get("designation_id", type=int)
     department_id = request.args.get("department_id", type=int)
     location_id = request.args.get("location_id", type=int)
+    entity_id = request.args.get("entity_id", type=int)
     status = request.args.get("status", "active")
     column_options = (
         ("work_email", "Work email"),
@@ -805,6 +816,8 @@ def employees():
         query = query.filter(EmployeeProfile.department_id == department_id)
     if location_id:
         query = query.filter(EmployeeProfile.location_id == location_id)
+    if entity_id:
+        query = query.filter(EmployeeProfile.entity_id == entity_id)
     if status == "active":
         query = query.filter(User.is_active.is_(True))
     elif status == "resigned":
@@ -816,9 +829,11 @@ def employees():
         designations=Designation.query.order_by(Designation.name).all(),
         departments=Department.query.order_by(Department.name).all(),
         locations=Location.query.order_by(Location.name).all(),
+        entities=Entity.query.order_by(Entity.name).all(),
         selected_designation_id=designation_id,
         selected_department_id=department_id,
         selected_location_id=location_id,
+        selected_entity_id=entity_id,
         selected_status=status,
         column_options=column_options,
         selected_columns=selected_columns,
@@ -869,8 +884,9 @@ def employee_new():
             return redirect(url_for("main.employee_new"))
         # A person's designation now governs operational authority; access-role
         # assignments are retained only for existing historic accounts.
+        temporary_password = request.form.get("password") or "ChangeMe123!"
         user = User(username=username, email=email, must_change_password=True)
-        user.set_password(request.form.get("password") or "ChangeMe123!")
+        user.set_password(temporary_password)
         db.session.add(user)
         db.session.flush()
         profile = EmployeeProfile(user_id=user.id, full_name=request.form["full_name"].strip(), employee_code=employee_code)
@@ -883,6 +899,8 @@ def employee_new():
             db.session.rollback()
             flash(str(error))
             return redirect(url_for("main.employee_new"))
+        if user.email:
+            send_welcome_email(user.email, profile.full_name, user.username, temporary_password)
         flash("Employee account created. The employee must change their temporary password at first sign-in.")
         return redirect(url_for("main.employee_detail", user_id=user.id))
     return render_template("employee_form.html", employee=None, profile=None, **_employee_form_options())
@@ -1239,18 +1257,39 @@ def documents():
         db.session.add(EmployeeDocument(
             user_id=owner.id,
             category=request.form.get("category", "Other").strip() or "Other",
+            details=request.form.get("details", "").strip() or None,
             filename=file.filename,
             stored_path=safe,
             mime_type=mime_type,
             file_size=size,
-            is_employee_visible=bool(request.form.get("is_employee_visible")),
+            is_employee_visible=True if owner.id == current_user.id else bool(request.form.get("is_employee_visible")),
             uploaded_by_id=current_user.id,
         ))
         db.session.commit()
         flash(f"Document uploaded to {display_name(owner)}’s profile.")
         return redirect(url_for("main.documents"))
-    docs = EmployeeDocument.query.order_by(EmployeeDocument.uploaded_at.desc()) if current_user.has_hr_access else EmployeeDocument.query.filter_by(user_id=current_user.id, is_employee_visible=True).order_by(EmployeeDocument.uploaded_at.desc())
-    return render_template("documents.html", documents=docs.all(), employees=EmployeeProfile.query.order_by(EmployeeProfile.full_name).all() if current_user.has_hr_access else [])
+    selected_employee_id = request.args.get("employee_user_id", type=int) if current_user.has_hr_access else current_user.id
+    docs = EmployeeDocument.query.filter_by(user_id=selected_employee_id).order_by(EmployeeDocument.uploaded_at.desc()) if selected_employee_id else []
+    return render_template(
+        "documents.html", documents=docs.all() if selected_employee_id else [],
+        employees=EmployeeProfile.query.order_by(EmployeeProfile.full_name).all() if current_user.has_hr_access else [],
+        selected_employee_id=selected_employee_id,
+    )
+
+
+@bp.post("/documents/<int:document_id>/delete")
+@login_required
+def delete_document(document_id):
+    document = db.get_or_404(EmployeeDocument, document_id)
+    if not (current_user.has_hr_access or document.user_id == current_user.id):
+        return "Forbidden", 403
+    stored_path = document.stored_path
+    owner_id = document.user_id
+    db.session.delete(document)
+    db.session.commit()
+    remove_private_upload(stored_path)
+    flash("Document deleted.")
+    return redirect(url_for("main.documents", employee_user_id=owner_id if current_user.has_hr_access else None))
 
 
 @bp.get("/documents/<int:document_id>/download")
@@ -1509,15 +1548,44 @@ def request_types():
     return redirect(url_for("main.workflows"))
 
 
-@bp.get("/birthdays")
+@bp.route("/birthdays", methods=["GET", "POST"])
 @login_required
 def birthdays():
     denied = admin_only()
     if denied:
         return denied
+    if request.method == "POST":
+        action = request.form.get("action")
+        if action == "birthday-email":
+            settings = BirthdayEmailSettings.query.order_by(BirthdayEmailSettings.id).first() or BirthdayEmailSettings()
+            settings.subject = request.form.get("subject", "").strip() or "Happy Birthday from Pointlabs"
+            settings.message = request.form.get("message", "").strip() or None
+            attachment = request.files.get("attachment")
+            if attachment and attachment.filename:
+                try:
+                    stored_path, mime_type, _size = store_uploaded_file(attachment, "birthday")
+                except ValueError as error:
+                    flash(str(error)); return redirect(url_for("main.birthdays"))
+                previous_path = settings.attachment_stored_path
+                settings.attachment_stored_path, settings.attachment_filename, settings.attachment_mime_type = stored_path, attachment.filename, mime_type
+                if previous_path:
+                    remove_private_upload(previous_path)
+            settings.updated_by_id = current_user.id
+            db.session.add(settings); db.session.commit()
+            flash("Birthday email content has been saved.")
+        elif action == "announcement":
+            body = request.form.get("body", "").strip()
+            if not body or len(body) > 600:
+                flash("Enter a public announcement of up to 600 characters.")
+            else:
+                db.session.add(WorkspaceNote(user_id=current_user.id, body=body, color=request.form.get("color", "gold"), is_global=True, show_everywhere=True))
+                db.session.commit(); flash("Public announcement published to every overview.")
+        else:
+            return "Invalid celebration action", 400
+        return redirect(url_for("main.birthdays"))
     until = date.today() + timedelta(days=3)
     people = [profile for profile in EmployeeProfile.query.all() if profile.date_of_birth and date.today() <= profile.date_of_birth.replace(year=date.today().year) <= until]
-    return render_template("birthdays.html", people=people)
+    return render_template("birthdays.html", people=people, settings=BirthdayEmailSettings.query.order_by(BirthdayEmailSettings.id).first())
 
 
 DEFAULT_REQUEST_CATEGORIES = (
@@ -1570,6 +1638,10 @@ def other_requests():
             if assignment.status == "pending":
                 db.session.add(Notification(user_id=assignment.assignee_id, message=f"New {category} request from {display_name(current_user)} needs your approval."))
         approval_recipient_ids = [assignment.assignee_id for assignment in approval_case.assignments if assignment.status == "pending"]
+        for hr_user in _hr_users():
+            if hr_user.id != current_user.id and hr_user.id not in approval_recipient_ids:
+                db.session.add(Notification(user_id=hr_user.id, message=f"New {category} request from {display_name(current_user)} was submitted."))
+                approval_recipient_ids.append(hr_user.id)
         db.session.commit()
         _email_system_notification_recipients(
             approval_recipient_ids,
@@ -1598,6 +1670,38 @@ def other_request_detail(request_id):
         message = request.form.get("message", "").strip()
         approval_recipient_ids = []
         employee_email_notice = None
+        employee_email_attachments = None
+        completed_document = None
+        completion_file = request.files.get("completed_document") if current_user.has_hr_access and action == "completed" else None
+        if completion_file and completion_file.filename:
+            if ApprovalInstance.query.filter_by(subject_type="other_request", subject_id=item.id, status="pending").first():
+                return "This request must be decided through its configured approval workflow", 409
+            try:
+                stored_path, mime_type, size = store_uploaded_file(completion_file, f"request-{item.id}")
+            except ValueError as error:
+                flash(str(error))
+                return redirect(url_for("main.other_request_detail", request_id=item.id))
+            if mime_type != "application/pdf":
+                remove_private_upload(stored_path)
+                flash("The completed HR document must be a valid PDF.")
+                return redirect(url_for("main.other_request_detail", request_id=item.id))
+            completed_document = EmployeeDocument(
+                user_id=item.user_id, category=f"Completed {item.category}",
+                details="Final document attached to the completed HR request.", filename=completion_file.filename,
+                stored_path=stored_path, mime_type=mime_type, file_size=size,
+                is_employee_visible=True, uploaded_by_id=current_user.id,
+            )
+            db.session.add(completed_document)
+            db.session.flush()
+            employee_email_attachments = [(
+                Path(current_app.instance_path) / "uploads" / stored_path,
+                completion_file.filename,
+                mime_type,
+            )]
+            db.session.add(OtherRequestAttachment(
+                other_request_id=item.id, filename=completion_file.filename, stored_path=stored_path,
+                mime_type=mime_type, uploaded_by_id=current_user.id,
+            ))
         employee_editable = item.status in {"draft", "submitted", "more_information_required", "resubmitted"}
         if action == "edit" and item.user_id == current_user.id and employee_editable:
             details = request.form.get("details", "").strip()
@@ -1618,6 +1722,8 @@ def other_request_detail(request_id):
             if ApprovalInstance.query.filter_by(subject_type="other_request", subject_id=item.id, status="pending").first():
                 return "This request must be decided through its configured approval workflow", 409
             item.status = action
+            if action == "completed" and completed_document:
+                item.completed_document_id = completed_document.id
             db.session.add(OtherRequestActivity(other_request_id=item.id, actor_id=current_user.id, activity_type=action, message=message or action.replace("_", " ").title()))
             db.session.add(Notification(user_id=item.user_id, message="Your request has been updated." if action != "completed" else "Your HR request has been completed."))
             if item.user.email:
@@ -1638,7 +1744,7 @@ def other_request_detail(request_id):
                 f"{display_name(current_user)} supplied additional information for a {item.category} request. Sign in to review it.",
             )
         if employee_email_notice and item.user.email:
-            send_notice_email(item.user.email, "Pointlabs One · Request update", employee_email_notice)
+            send_notice_email(item.user.email, "Pointlabs One · Request update", employee_email_notice, attachments=employee_email_attachments)
         flash("Request updated.")
         return redirect(url_for("main.other_request_detail", request_id=item.id))
     activities = [activity for activity in item.activities if current_user.has_hr_access or not activity.is_internal]

@@ -58,3 +58,10 @@ if (liveClock) {
   renderClock();
   window.setInterval(renderClock, 30_000);
 }
+
+const documentOwnerSelect = document.querySelector('.documents-layout select[name="employee_user_id"]');
+if (documentOwnerSelect) {
+  documentOwnerSelect.addEventListener('change', () => {
+    window.location.assign(`${window.location.pathname}?employee_user_id=${encodeURIComponent(documentOwnerSelect.value)}`);
+  });
+}

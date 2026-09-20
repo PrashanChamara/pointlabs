@@ -11,13 +11,14 @@
     <label><select name="designation_id"><option value="">All designations</option>{% for d in designations %}<option value="{{ d.id }}" {% if selected_designation_id == d.id %}selected{% endif %}>{{ d.name }}</option>{% endfor %}</select></label>
     <label><select name="department_id"><option value="">All departments</option>{% for d in departments %}<option value="{{ d.id }}" {% if selected_department_id == d.id %}selected{% endif %}>{{ d.name }}</option>{% endfor %}</select></label>
     <label><select name="location_id"><option value="">All locations</option>{% for item in locations %}<option value="{{ item.id }}" {% if selected_location_id == item.id %}selected{% endif %}>{{ item.name }}</option>{% endfor %}</select></label>
+    <label><select name="entity_id"><option value="">All entities</option>{% for item in entities %}<option value="{{ item.id }}" {% if selected_entity_id == item.id %}selected{% endif %}>{{ item.name }}</option>{% endfor %}</select></label>
     <label><select name="status"><option value="active" {% if selected_status == 'active' %}selected{% endif %}>Active employees</option><option value="resigned" {% if selected_status == 'resigned' %}selected{% endif %}>Resigned</option><option value="all" {% if selected_status == 'all' %}selected{% endif %}>All records</option></select></label>
     <button class="filter-button">Apply filters</button>
   </form>
   <details class="directory-columns">
     <summary>Customize table columns</summary>
     <form method="get" class="column-picker">
-      <input type="hidden" name="q" value="{{ request.args.get('q', '') }}"><input type="hidden" name="designation_id" value="{{ selected_designation_id or '' }}"><input type="hidden" name="department_id" value="{{ selected_department_id or '' }}"><input type="hidden" name="location_id" value="{{ selected_location_id or '' }}"><input type="hidden" name="status" value="{{ selected_status }}">
+      <input type="hidden" name="q" value="{{ request.args.get('q', '') }}"><input type="hidden" name="designation_id" value="{{ selected_designation_id or '' }}"><input type="hidden" name="department_id" value="{{ selected_department_id or '' }}"><input type="hidden" name="location_id" value="{{ selected_location_id or '' }}"><input type="hidden" name="entity_id" value="{{ selected_entity_id or '' }}"><input type="hidden" name="status" value="{{ selected_status }}">
       {% for key, label in column_options %}<label class="check-label"><input type="checkbox" name="columns" value="{{ key }}" {% if key in selected_columns %}checked{% endif %}> {{ label }}</label>{% endfor %}
       <button class="secondary-action">Update table</button>
     </form>
@@ -30,6 +31,6 @@
     <td data-label="Status"><span class="status {{ profile.employment_status }}">{{ 'Active' if profile.user.is_active else profile.employment_status|replace('_', ' ')|title }}</span></td><td class="employee-open"><a class="table-action" href="{{ url_for('main.employee_detail', user_id=profile.user_id) }}">Open profile →</a></td>
   </tr>{% else %}<tr><td colspan="{{ 7 + selected_columns|length }}"><div class="empty-state compact"><div class="empty-orb">⌕</div><b>No employees match these filters</b><p>Try a different search or clear filters to see the directory.</p></div></td></tr>{% endfor %}
   </tbody></table></div>
-  {% if employees.pages > 1 %}<nav class="pagination" aria-label="Employee pages">{% for number in employees.iter_pages() %}{% if number %}<a class="{% if number == employees.page %}current{% endif %}" href="{{ url_for('main.employees', page=number, q=request.args.get('q', ''), designation_id=selected_designation_id or '', department_id=selected_department_id or '', location_id=selected_location_id or '', status=selected_status, columns=selected_columns) }}">{{ number }}</a>{% else %}<span>…</span>{% endif %}{% endfor %}</nav>{% endif %}
+  {% if employees.pages > 1 %}<nav class="pagination" aria-label="Employee pages">{% for number in employees.iter_pages() %}{% if number %}<a class="{% if number == employees.page %}current{% endif %}" href="{{ url_for('main.employees', page=number, q=request.args.get('q', ''), designation_id=selected_designation_id or '', department_id=selected_department_id or '', location_id=selected_location_id or '', entity_id=selected_entity_id or '', status=selected_status, columns=selected_columns) }}">{{ number }}</a>{% else %}<span>…</span>{% endif %}{% endfor %}</nav>{% endif %}
 </section>
 {% endblock %}

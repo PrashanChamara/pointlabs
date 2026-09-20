@@ -4,7 +4,7 @@ from datetime import date
 
 from app.extensions import db
 from app.models.hr import LeaveBalance, LeaveBalanceAdjustment, LeaveRequest, LeaveType, PublicHoliday
-from app.models.user import EmployeeProfile
+from app.models.user import EmployeeProfile, User
 
 
 POLICY_DEFAULTS = {
@@ -89,14 +89,27 @@ def _leave_code(leave_type):
 
 
 def entitlement_for_year(user, leave_type, calendar_year, today=None):
-    """Apply only the supplied policy rules; annual leave is prorated for new joiners."""
+    """Apply policy entitlement with bounded joining and resignation pro-rating."""
     today = today or date.today()
     policy = POLICY_DEFAULTS.get(_leave_code(leave_type), {"days": leave_type.default_days, "accrual": leave_type.accrual_method})
     entitlement = float(policy["days"])
     profile = user.employee_profile
-    if _leave_code(leave_type) == "ANNUAL" and profile and profile.date_of_joining and profile.date_of_joining.year == calendar_year:
-        eligible_months = 13 - profile.date_of_joining.month
-        entitlement = round(entitlement * eligible_months / 12, 2)
+    if profile and _leave_code(leave_type) in {"ANNUAL", "SICK"}:
+        # The existing policy accrues in calendar months.  Use that same convention
+        # for joiners and leavers, rather than inventing a different daily rule.
+        first_month = 1
+        last_month = 12
+        if profile.date_of_joining:
+            if profile.date_of_joining.year > calendar_year:
+                return 0.0
+            if profile.date_of_joining.year == calendar_year:
+                first_month = profile.date_of_joining.month
+        if profile.resignation_date:
+            if profile.resignation_date.year < calendar_year:
+                return 0.0
+            if profile.resignation_date.year == calendar_year:
+                last_month = profile.resignation_date.month
+        entitlement = round(entitlement * max(0, last_month - first_month + 1) / 12, 2)
     return entitlement
 
 
@@ -132,6 +145,10 @@ def refresh_leave_balance(balance, today=None):
         months = today.month if today.year == balance.calendar_year else 12
         if profile and profile.date_of_joining and profile.date_of_joining.year == balance.calendar_year:
             months = max(0, months - profile.date_of_joining.month + 1)
+        # Once an exit date is recorded the final, prorated entitlement is visible.
+        # This intentionally allows a negative balance when approved leave exceeds it.
+        if profile and profile.resignation_date and profile.resignation_date.year == balance.calendar_year:
+            months = max(0, profile.resignation_date.month - (profile.date_of_joining.month if profile.date_of_joining and profile.date_of_joining.year == balance.calendar_year else 1) + 1)
         balance.accrued_days = min(balance.entitled_days, round(22.0 * months / 12, 2))
     elif leave_type.accrual_method in {"annual", "event"}:
         balance.accrued_days = balance.entitled_days
@@ -151,6 +168,34 @@ def refresh_leave_balance(balance, today=None):
         2,
     )
     return balance
+
+
+def rollover_leave_balances(calendar_year=None):
+    """Create/recalculate the new-year Annual/Sick opening balances safely.
+
+    Run this from a scheduled job in January. Re-running it is idempotent: the
+    carry-forward value is derived from the preceding year and never added twice.
+    """
+    target_year = calendar_year or date.today().year
+    previous_year = target_year - 1
+    annual = LeaveType.query.filter_by(code="ANNUAL", is_active=True).first()
+    sick = LeaveType.query.filter_by(code="SICK", is_active=True).first()
+    if not annual and not sick:
+        return 0
+    changed = 0
+    for profile in EmployeeProfile.query.join(EmployeeProfile.user).filter(User.is_active.is_(True)).all():
+        for leave_type in (annual, sick):
+            if leave_type is None:
+                continue
+            previous = get_or_create_leave_balance(profile.user, leave_type, previous_year, today=date(previous_year, 12, 31))
+            current = get_or_create_leave_balance(profile.user, leave_type, target_year, today=date(target_year, 1, 1))
+            expected_carry = min(max(previous.available_days, 0), 5.0) if leave_type.code == "ANNUAL" else 0.0
+            if current.carry_forward_days != expected_carry:
+                current.carry_forward_days = expected_carry
+                refresh_leave_balance(current, today=date(target_year, 1, 1))
+                changed += 1
+    db.session.commit()
+    return changed
 
 
 def adjust_leave_balance(balance, days, reason, actor=None):

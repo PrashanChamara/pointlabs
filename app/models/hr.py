@@ -64,6 +64,7 @@ class EmployeeDocument(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
     category = db.Column(db.String(80), nullable=False)
+    details = db.Column(db.String(500), nullable=True)
     filename = db.Column(db.String(255), nullable=False)
     stored_path = db.Column(db.String(255), nullable=False)
     mime_type = db.Column(db.String(120), nullable=True)
@@ -427,3 +428,16 @@ class BirthdayVoucher(db.Model):
     voucher_code = db.Column(db.String(120), nullable=True)
     voucher_filename = db.Column(db.String(255), nullable=True)
     sent_at = db.Column(db.DateTime, nullable=True)
+
+
+class BirthdayEmailSettings(db.Model):
+    """HR-owned content for the once-yearly birthday delivery."""
+    id = db.Column(db.Integer, primary_key=True)
+    subject = db.Column(db.String(180), nullable=False, default="Happy Birthday from Pointlabs")
+    message = db.Column(db.Text, nullable=True)
+    attachment_filename = db.Column(db.String(255), nullable=True)
+    attachment_stored_path = db.Column(db.String(255), nullable=True)
+    attachment_mime_type = db.Column(db.String(120), nullable=True)
+    updated_by_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    updated_by = db.relationship("User", foreign_keys=[updated_by_id])

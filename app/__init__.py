@@ -67,6 +67,12 @@ def create_app(config_name="development"):
         from app.services.birthdays import process_birthdays as process
         process()
 
+    @app.cli.command("process-leave-cycle")
+    def process_leave_cycle():
+        """Apply the idempotent annual leave carry-forward at the start of a year."""
+        from app.services.hr import rollover_leave_balances
+        print(f"Updated {rollover_leave_balances()} leave balance opening record(s).")
+
     @app.cli.command("process-reminders")
     def process_reminders():
         """Send due workspace-task alarms once; schedule this command every few minutes."""

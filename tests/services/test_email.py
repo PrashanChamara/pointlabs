@@ -3,6 +3,7 @@ from app.services.email import (
     send_leave_status_email,
     send_message_email,
     send_password_reset_email,
+    send_welcome_email,
 )
 
 
@@ -55,3 +56,16 @@ def test_all_transactional_email_types_render_branded_content(app, monkeypatch):
     assert "Annual Leave" in rendered[0]
     assert "Welcome to the team." in rendered[1]
     assert "PL-BDAY-2026" in rendered[2]
+
+
+def test_welcome_email_includes_initial_account_details(app, monkeypatch):
+    monkeypatch.setattr("app.services.email.smtplib.SMTP", FakeSMTP)
+    FakeSMTP.sent.clear()
+    app.config.update(SMTP_HOST="smtp.example.test", SMTP_FROM="hello@example.test")
+    with app.app_context():
+        assert send_welcome_email("person@example.test", "Mira Patel", "mira.p", "Temporary-123")
+    message = FakeSMTP.sent[0]
+    assert "Welcome to Pointlabs One" in message["Subject"]
+    plain = message.get_body(preferencelist=("plain",)).get_content()
+    assert "mira.p" in plain
+    assert "Temporary-123" in plain

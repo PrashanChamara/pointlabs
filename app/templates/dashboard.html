@@ -17,6 +17,8 @@
   <article class="metric-card metric-gold"><div class="metric-icon"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6M17 7h4m-2-2v4"/></svg></div><div><small>{{ 'TOTAL ACTIVE EMPLOYEES' if current_user.has_hr_access else 'TODAY’S ATTENDANCE' }}</small><div class="metric-value">{% if current_user.has_hr_access %}{{ people_count }}{% elif attendance_today and attendance_today.checked_out_at %}Done{% elif attendance_today %}In{% else %}—{% endif %}</div><div class="metric-note">{% if current_user.has_hr_access %}Current people records{% elif attendance_today %}Workday recorded{% else %}Not checked in yet{% endif %}</div></div></article>
 </section>
 
+{% if announcements %}<section class="panel announcement-panel" aria-label="Pointlabs announcements"><div class="panel-head"><div><span class="section-kicker">POINTLABS MOMENTS</span><h2>Team announcements</h2></div></div>{% for announcement in announcements %}<div class="notice-row announcement {{ announcement.color }}"><span>✦</span><div>{{ announcement.body }}<small>Shared by {{ announcement.user.employee_profile.full_name if announcement.user.employee_profile else announcement.user.username }} · {{ announcement.created_at.strftime('%d %b') }}</small></div></div>{% endfor %}</section>{% endif %}
+
 <section class="dashboard-layout">
   <div class="dashboard-main">
     <article class="panel coverage-panel">

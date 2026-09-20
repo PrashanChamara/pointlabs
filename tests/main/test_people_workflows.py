@@ -104,6 +104,38 @@ def test_administrator_can_upload_document_for_an_employee(client, app):
         assert EmployeeDocument.query.one().user_id == employee_id
 
 
+def test_document_library_requires_an_hr_selection_and_scopes_to_that_employee(client, app):
+    with app.app_context():
+        seed_reference_data("admin123")
+        admin = User.query.filter_by(username="admin").one()
+        employee = User(username="mira", email="mira@example.test", must_change_password=False)
+        employee.set_password("password")
+        db.session.add(employee)
+        db.session.flush()
+        db.session.add(EmployeeProfile(user_id=employee.id, full_name="Mira Patel", employee_code="PL-002"))
+        db.session.commit()
+        employee_id = employee.id
+        sign_in(client, admin)
+
+    client.post(
+        "/documents",
+        data={
+            "employee_user_id": str(employee_id),
+            "category": "Passport",
+            "file": (BytesIO(b"%PDF-1.4 test"), "mira-passport.pdf"),
+        },
+        content_type="multipart/form-data",
+    )
+    blank_library = client.get("/documents")
+    selected_library = client.get(f"/documents?employee_user_id={employee_id}")
+
+    assert blank_library.status_code == 200
+    assert b"Select an employee" in blank_library.data
+    assert b"mira-passport.pdf" not in blank_library.data
+    assert selected_library.status_code == 200
+    assert b"mira-passport.pdf" in selected_library.data
+
+
 def test_message_is_stored_for_selected_recipient(client, app):
     with app.app_context():
         seed_reference_data("admin123")

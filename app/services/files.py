@@ -64,3 +64,13 @@ def remove_private_profile_photo(stored_name: str | None):
         target.unlink(missing_ok=True)
     except OSError:
         current_app.logger.warning("Could not remove private profile photo: %s", stored_name)
+
+
+def remove_private_upload(stored_name: str | None):
+    """Remove one known private upload without accepting a filesystem path."""
+    if not stored_name or Path(stored_name).name != stored_name:
+        return
+    try:
+        (Path(current_app.instance_path) / "uploads" / stored_name).unlink(missing_ok=True)
+    except OSError:
+        current_app.logger.warning("Could not remove private upload: %s", stored_name)
