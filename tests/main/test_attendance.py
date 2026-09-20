@@ -114,9 +114,12 @@ def test_reports_surface_selected_period_attendance_and_csv_export(client, app):
 
     response = client.get("/reports?from_date=2026-09-01&to_date=2026-09-30")
     assert response.status_code == 200
+    assert b"REPORT LIBRARY" in response.data
     assert b"ATTENDANCE REPORT" in response.data
     assert b"Attendance Report User" in response.data
-    assert b"Attendance CSV" in response.data
+    assert b'aria-label="Export attendance CSV"' in response.data
+    assert b'aria-label="Export annual and sick leave balances CSV"' in response.data
+    assert b"Full employee CSV" not in response.data
     export = client.get("/admin/attendance.csv?from_date=2026-09-01&to_date=2026-09-30")
     assert export.status_code == 200
     assert b"Attendance Report User" in export.data

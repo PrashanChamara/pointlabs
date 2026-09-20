@@ -1,4 +1,4 @@
-const CACHE_NAME = 'pointlabs-shell-v13';
+const CACHE_NAME = 'pointlabs-shell-v14';
 const SHELL = ['/auth/login', '/static/icon.png'];
 
 self.addEventListener('install', (event) => {

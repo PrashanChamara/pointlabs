@@ -1472,7 +1472,6 @@ def reports():
         to_date = date.fromisoformat(request.args.get("to_date")) if request.args.get("to_date") else date.today()
     except ValueError:
         from_date, to_date = date.today().replace(month=1, day=1), date.today()
-    leaves = LeaveRequest.query.filter(LeaveRequest.start_date <= to_date, LeaveRequest.end_date >= from_date).order_by(LeaveRequest.created_at.desc()).all()
     annual_sick = LeaveBalance.query.join(LeaveType).filter(LeaveBalance.calendar_year == from_date.year, LeaveType.code.in_(["ANNUAL", "SICK"])).all()
     attendance_records = AttendanceRecord.query.filter(
         AttendanceRecord.work_date.between(from_date, to_date),
@@ -1483,7 +1482,7 @@ def reports():
     )
     return render_template(
         "reports.html",
-        leaves=leaves[:8], balances=annual_sick,
+        balances=annual_sick,
         attendance_records=attendance_records[:12],
         attendance_record_count=len(attendance_records),
         attendance_hours=round(attendance_hours, 1),
